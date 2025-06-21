@@ -6,8 +6,8 @@ use clap::Parser as _;
 mod cornucopia;
 use deadpool_postgres::Pool;
 use pitsu_lib::{
-    anyhow::Result, AccessLevel, RemoteRepository, RootFolder, SimpleRemoteRepository, ThisUser,
-    UpdateRemoteRepository, User, UserWithAccess,
+    anyhow::Result, AccessLevel, CreateRemoteRepository, RemoteRepository, RootFolder,
+    SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess,
 };
 
 // curl -X GET https://pit.p51.nl/
@@ -831,6 +831,51 @@ async fn delete_file(
     }
 }
 
+// curl -X POST -H "Content-Type: application/json" -d '{"name": "New Repository"}' -H "Authorization Bearer <token>" https://pit.p51.nl/api/repository
+#[post("/api/repository")]
+async fn create_repository(
+    req: actix_web::HttpRequest,
+    pool: Data<Pool>,
+    body: actix_web::web::Json<CreateRemoteRepository>,
+) -> HttpResponse {
+    let pool = pool.into_inner();
+    let user = match get_user(&req, pool.clone()).await {
+        Ok(user) => user,
+        Err(err) => {
+            log::error!("Failed to get bearer token: {err}");
+            return HttpResponse::Unauthorized().body("Unauthorized");
+        }
+    };
+    let mut connection = match pool.get().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            log::error!("Failed to get database connection: {err}");
+            return HttpResponse::InternalServerError().body("Failed to get database connection");
+        }
+    };
+    let transaction = match connection.transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("Failed to start transaction: {err}");
+            return HttpResponse::InternalServerError().body("Failed to start transaction");
+        }
+    };
+    let res = crate::cornucopia::queries::repository::create()
+        .bind(&transaction, &&*body.name, &user.uuid)
+        .await;
+    if let Err(err) = res {
+        log::error!("Failed to create repository: {err}");
+        transaction.rollback().await.unwrap_or_else(|err| {
+            log::error!("Failed to rollback transaction: {err}");
+        });
+        return HttpResponse::InternalServerError().body("Failed to create repository");
+    }
+    transaction.commit().await.unwrap_or_else(|err| {
+        log::error!("Failed to commit transaction: {err}");
+    });
+    HttpResponse::Created().body("Repository created successfully")
+}
+
 async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
     if let Err(e) = datalust_logger::init("pitsu") {
         eprintln!("Failed to initialize logger: {e}");
@@ -846,6 +891,7 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .service(get_other)
             .service(get_all_users)
             .service(get_users_with_access)
+            .service(create_repository)
             // Wildcard routes (must be last to avoid conflicts)
             .service(api_catch_all)
             .service(repository)

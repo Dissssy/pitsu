@@ -382,3 +382,8 @@ pub struct SetAccess {
     pub user: Uuid,
     pub access_level: AccessLevel,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CreateRemoteRepository {
+    pub name: Arc<str>,
+}
