@@ -786,6 +786,7 @@ dependencies = [
 [[package]]
 name = "datalust_logger"
 version = "0.0.0"
+source = "git+https://github.com/Dissssy/datalust_logger#2662bed91cff3c7a9f2a0fdc3c5a4ecd33220f74"
 dependencies = [
  "anyhow",
  "chrono",
