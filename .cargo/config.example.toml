@@ -1,0 +1,12 @@
+[env]
+PORT = "8080"
+HOST = "0.0.0.0"
+ROOT_FOLDER = "/path/to/pitsu-root"
+POSTGRES_USER = "postgres username"
+POSTGRES_PASSWORD = "postgres password"
+POSTGRES_HOST = "localhost"
+POSTGRES_PORT = "5432"
+POSTGRES_DB = "pitsu database name"
+SEQ_API_KEY = "your-seq-api-key"
+SEQ_API_URL = "http://your-seq-server:5341"
+SEQ_LOG_LEVEL = "warn"

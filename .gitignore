@@ -1,0 +1,8 @@
+target
+pitsu-root
+PITSU.sh
+pit.p51.nl.conf
+shared/diffs.json
+shared/test.json
+.cargo/config.toml
+notes

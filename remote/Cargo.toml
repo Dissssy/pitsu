@@ -1,0 +1,30 @@
+[package]
+name = "pitsu-server"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+actix-service = "2.0.3"
+actix-web = "4.11.0"
+clap = { version = "4.5.40", features = ["derive", "env"] }
+cornucopia = "0.9.0"
+cornucopia_async = { version = "0.6.0", features = [
+    "deadpool",
+    "with-serde_json-1",
+] }
+deadpool-postgres = "0.12.1"
+features = "0.10.0"
+futures = "0.3.31"
+pitsu-lib = { path = "../shared" }
+postgres = { version = "0.19.10", features = ["with-time-0_3", "with-uuid-1"] }
+postgres-types = { version = "0.2.9", features = ["with-uuid-1"] }
+serde_json = { version = "1.0.140", features = ["raw_value"] }
+time = "0.3.41"
+tokio = { version = "1.45.1", features = ["full"] }
+tokio-postgres = "0.7.13"
+uuid = { version = "1.17.0", features = ["serde", "v4"] }
+datalust_logger = { path = "/git/datalust_logger" }
+log = "0.4.27"
+actix-files = "0.6.6"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+actix-multipart = "0.7.2"
