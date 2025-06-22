@@ -42,7 +42,6 @@ impl File {
         }
     }
     fn files(files: Vec<Self>, path_so_far: String) -> Vec<RawFile> {
-        // Recursively collect all files in the folder structure
         let mut result = Vec::new();
         for file in files {
             match file {
@@ -68,7 +67,6 @@ impl File {
 }
 
 fn recursive_count(files: &[File]) -> usize {
-    // Count the number of files in the folder structure
     files
         .par_iter()
         .fold(
@@ -86,11 +84,9 @@ impl RootFolder {
         self.size
     }
     pub fn file_count(&self) -> usize {
-        // Count the number of files in the folder structure
         recursive_count(&self.children)
     }
 
-    // If the file is a folder, call this function again to get its children
     pub fn ingest_folder(root: &PathBuf) -> Result<Self> {
         let children: Vec<File> = std::fs::read_dir(root)?
             .par_bridge()
@@ -136,10 +132,8 @@ impl RootFolder {
     }
 
     pub fn diff(&self, remote: &Self) -> Vec<Diff> {
-        // Compare self with other, and return a vector of Diff objects
         let mut diffs = Vec::new();
 
-        // first flatten the children into a single vector of RawFile
         let self_files = File::files(self.children.clone(), "".into());
         let other_files = File::files(remote.children.clone(), "".into());
 
@@ -174,12 +168,6 @@ impl RootFolder {
     }
 
     pub fn index_through(&self, path: &str) -> Result<Self> {
-        // Return the folder structure at the given path
-        // For example, the structure is
-        // /git { /pitsu { /remote, /local } }
-        // path = /git/pitsu
-        // response should be { /remote, /local }
-        // get this information from the self.children
         let mut current_folder = self.clone();
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         for part in parts {
@@ -238,7 +226,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingest_folder() -> Result<()> {
-        // read in the root folder of "/git/pitsu/remote" and write it to /git/pitsu/test.json
         let root_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .ok_or(anyhow::anyhow!("Failed to get parent directory"))?
@@ -254,7 +241,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_diff() -> Result<()> {
-        // ingest the folders at "/git/pitsu/local" and "/git/pitsu/remote" and diff them
         let local_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .ok_or(anyhow::anyhow!("Failed to get parent directory"))?
@@ -266,12 +252,12 @@ mod tests {
         let local_folder = RootFolder::ingest_folder(&local_path)?;
         let remote_folder = RootFolder::ingest_folder(&remote_path)?;
         let diffs = local_folder.diff(&remote_folder);
-        // Write the diffs to a file
+
         let diffs_json = serde_json::to_string_pretty(&diffs)?;
         let output_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("diffs.json");
         fs::write(output_path, diffs_json)?;
         println!("Differences written to diffs.json");
-        // Assert that there are differences
+
         assert!(
             !diffs.is_empty(),
             "No differences found, expected some diffs"
@@ -281,14 +267,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_same_diff() -> Result<()> {
-        // ingest the folders at "/git/pitsu/local" and "/git/pitsu/local" and diff them
         let local_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .ok_or(anyhow::anyhow!("Failed to get parent directory"))?
             .join("local");
         let local_folder = RootFolder::ingest_folder(&local_path)?;
         let diffs = local_folder.diff(&local_folder);
-        // Assert that there are no differences
+
         assert!(diffs.is_empty(), "Expected no differences, but found some");
         println!("No differences found as expected.");
         Ok(())
@@ -300,6 +285,7 @@ pub struct RemoteRepository {
     pub uuid: Uuid,
     pub name: Arc<str>,
     pub files: RootFolder,
+    pub access_level: AccessLevel,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

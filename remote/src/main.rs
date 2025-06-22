@@ -307,6 +307,7 @@ async fn repository(
                 uuid: repo.uuid,
                 name: repo.name.into(),
                 files,
+                access_level,
             })
         })
         .unwrap_or_else(|err| {

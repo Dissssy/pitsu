@@ -14,7 +14,7 @@ use crate::config::StoredRepository;
 
 fn main() -> iced::Result {
     setup();
-    // iced::run(Title { username: USERNAME.clone() }, App::update, App::view)
+
     iced::application(Title, App::update, App::view)
         .run_with(|| (App::default(), Task::done(Message::Start)))
 }
@@ -28,7 +28,7 @@ impl iced::application::Title<App> for Title {
 }
 
 fn setup() {
-    // Check env vars
+    std::panic::set_hook(Box::new(panic_hook));
     if CONFIG.api_key().is_empty() {
         log::error!("PITSU_API_KEY is not set. Please set it in your environment variables.");
         panic!("PITSU_API_KEY is not set. Please set it in your environment variables.");
@@ -41,7 +41,7 @@ fn setup() {
         log::warn!("PITSU_PUBLIC_URL is not set. Please set it in your environment variables.");
         panic!("PITSU_PUBLIC_URL is not set. Please set it in your environment variables.");
     }
-    // Initialize logging
+
     std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
     datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid()))
         .expect("Failed to initialize logger");
@@ -71,167 +71,178 @@ enum Message {
 impl App {
     pub fn view(&self) -> Column<Message> {
         match &self.state {
-            StateMachine::Startup(StartupState::Pending) => {
-                column![text("Loading...").size(30),]
-            }
+            StateMachine::Startup(StartupState::Pending) => Self::view_loading("Loading..."),
             StateMachine::Startup(StartupState::Loading) => {
-                column![text("Loading user data...").size(30),]
+                Self::view_loading("Loading user data...")
             }
-            StateMachine::Startup(StartupState::Errored(err)) => {
-                column![text(format!("Error: {err}"))
-                    .color(*colors::ERROR_COLOR)
-                    .size(30),]
-            }
-            StateMachine::MainWindow { login_data } => {
-                let mut column = Column::with_children(vec![text(format!(
-                    "Welcome, {}!",
-                    login_data.user.username
-                ))
-                .size(30)
-                .into()]);
-                for repository in &login_data.owned_repositories {
-                    column = column.push(
-                        button(text(format!("Repository (Owned): {}", repository.name))).on_press(
-                            Message::ChangeState(StateMachine::RepositoryDetails {
-                                login_data: login_data.clone(),
-                                repository_uuid: repository.uuid,
-                                repository: Pending::Unsent, // Initially, we don't have the repository data
-                                repository_diff: Pending::Unsent, // Initially, we don't have the repository diff data
-                                sync_status: Pending::Unsent, // Initially, we don't have the sync status
-                            }),
-                        ),
-                    );
-                }
-                for (repository, permission_level) in &login_data.accessible_repositories {
-                    column = column.push(
-                        button(text(format!(
-                            "Repository ({}): {}",
-                            permission_level, repository.name
-                        )))
-                        .on_press(Message::ChangeState(
-                            StateMachine::RepositoryDetails {
-                                login_data: login_data.clone(),
-                                repository_uuid: repository.uuid,
-                                repository: Pending::Unsent, // Initially, we don't have the repository data
-                                repository_diff: Pending::Unsent, // Initially, we don't have the repository diff data
-                                sync_status: Pending::Unsent, // Initially, we don't have the sync status
-                            },
-                        )),
-                    );
-                }
-                column
-            }
+            StateMachine::Startup(StartupState::Errored(err)) => Self::view_error(err),
+            StateMachine::MainWindow { login_data } => self.view_main_window(login_data),
             StateMachine::RepositoryDetails {
                 login_data: _,
                 repository_uuid: _,
                 repository,
                 repository_diff,
                 sync_status,
-            } => match repository {
-                Pending::Unsent => {
-                    column![text("Fetching repository data...").size(30),]
-                }
-                Pending::InProgress => {
-                    column![text("Repository data is being fetched...").size(30),]
-                }
-                Pending::Ready((repo, stored_repo)) => {
-                    let repo = repo.as_ref();
-                    let mut column = column![
-                        text(format!("Repository Details: {}", repo.name)).size(30),
-                        text(format!("UUID: {}", repo.uuid)).size(20),
-                        text(format!("Files: {}", repo.files.file_count())).size(20),
-                        text(format!("Size: {}", readable_size(repo.files.size()))).size(20),
-                    ];
-                    match stored_repo {
-                        Some(stored_repo) => {
-                            column = column.push(
-                                text(format!(
-                                    "Stored Repository: {}",
-                                    stored_repo.path.to_string_lossy()
-                                ))
-                                .size(30),
-                            );
-                        }
-                        None => {
-                            column = column.push(
-                                button(text("No stored repository found").size(30))
-                                    .on_press(Message::SelectFolder(repo.uuid)),
-                            );
-                        }
-                    }
-                    match repository_diff {
-                        Pending::Unsent => {
-                            column =
-                                column.push(text("Repository diff is not yet fetched.").size(30));
-                        }
-                        Pending::InProgress => {
-                            column =
-                                column.push(text("Repository diff is being fetched...").size(30));
-                        }
-                        Pending::Ready(diff) => {
-                            for diff in diff.iter() {
-                                column = column.push(
-                                    text(format!(
-                                        "{} - {}",
-                                        match diff.change_type {
-                                            pitsu_lib::ChangeType::Added => "ADDED",
-                                            pitsu_lib::ChangeType::Modified => "MODIFIED",
-                                            pitsu_lib::ChangeType::Removed => "REMOVED",
-                                        },
-                                        diff.full_path,
-                                    ))
-                                    .color(match diff.change_type {
-                                        pitsu_lib::ChangeType::Added => *colors::ADDED_COLOR,
-                                        pitsu_lib::ChangeType::Modified => *colors::MODIFIED_COLOR,
-                                        pitsu_lib::ChangeType::Removed => *colors::REMOVED_COLOR,
-                                    })
-                                    .size(20),
-                                );
-                            }
-                            if diff.is_empty() {
-                                column = column.push(text("No changes detected.").size(30));
-                            } else {
-                                match sync_status {
-                                    Pending::Unsent => {
-                                        column = column.push(
-                                            button(text("Sync Changes").size(30))
-                                                .on_press(Message::Sync(repo.uuid, diff.clone())),
-                                        );
-                                    }
-                                    Pending::InProgress => {
-                                        column = column.push(text("Syncing changes...").size(30));
-                                    }
-                                    Pending::Ready(_) => {
-                                        column = column
-                                            .push(text("Changes synced successfully.").size(30));
-                                    }
-                                    Pending::Errored(err) => {
-                                        column = column.push(
-                                            text(format!("Error syncing changes: {err}"))
-                                                .color(*colors::ERROR_COLOR)
-                                                .size(30),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Pending::Errored(err) => {
-                            column = column.push(
-                                text(format!("Error fetching repository diff: {err}")).size(30),
-                            );
-                        }
-                    };
-                    column
-                }
-                Pending::Errored(err) => {
-                    column![text(format!("Error fetching repository: {err}"))
-                        .color(*colors::ERROR_COLOR)
-                        .size(30),]
-                }
-            },
+            } => self.view_repository_details(repository, repository_diff, sync_status),
             #[allow(unreachable_patterns)]
-            e => {
-                column![text(format!("Current state: {e:?}")).size(30),]
+            e => column![text(format!("Current state: {e:?}")).size(30)],
+        }
+    }
+
+    fn view_loading(msg: &str) -> Column<Message> {
+        column![text(msg).size(30)]
+    }
+
+    fn view_error(err: &Arc<str>) -> Column<'static, Message> {
+        column![text(format!("Error: {err}"))
+            .color(*colors::ERROR_COLOR)
+            .size(30)]
+    }
+
+    fn view_main_window(&self, login_data: &Arc<ThisUser>) -> Column<Message> {
+        let mut col = Column::with_children(vec![text(format!(
+            "Welcome, {}!",
+            login_data.user.username
+        ))
+        .size(30)
+        .into()]);
+        for repository in &login_data.owned_repositories {
+            col = col.push(
+                button(text(format!("Repository (Owned): {}", repository.name))).on_press(
+                    Message::ChangeState(StateMachine::RepositoryDetails {
+                        login_data: login_data.clone(),
+                        repository_uuid: repository.uuid,
+                        repository: Pending::Unsent,
+                        repository_diff: Pending::Unsent,
+                        sync_status: Pending::Unsent,
+                    }),
+                ),
+            );
+        }
+        for (repository, permission_level) in &login_data.accessible_repositories {
+            col = col.push(
+                button(text(format!(
+                    "Repository ({}): {}",
+                    permission_level, repository.name
+                )))
+                .on_press(Message::ChangeState(
+                    StateMachine::RepositoryDetails {
+                        login_data: login_data.clone(),
+                        repository_uuid: repository.uuid,
+                        repository: Pending::Unsent,
+                        repository_diff: Pending::Unsent,
+                        sync_status: Pending::Unsent,
+                    },
+                )),
+            );
+        }
+        col
+    }
+
+    fn view_repository_details(
+        &self,
+        repository: &Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>, // Fixed generics syntax here
+        repository_diff: &Pending<Arc<[Diff]>>,
+        sync_status: &Pending<()>,
+    ) -> Column<'static, Message> {
+        match repository {
+            Pending::Unsent => Self::view_loading("Fetching repository data..."),
+            Pending::InProgress => Self::view_loading("Repository data is being fetched..."),
+            Pending::Ready((repo, stored_repo)) => {
+                let repo = repo.as_ref();
+                // Add Back button at the top
+                let mut col = column![
+                    button(text("Back").size(20)).on_press(Message::ChangeState(
+                        StateMachine::MainWindow {
+                            login_data: self.get_login_data()
+                        }
+                    )),
+                    text(format!("Repository Details: {}", repo.name)).size(30),
+                    text(format!("UUID: {}", repo.uuid)).size(20),
+                    text(format!("Files: {}", repo.files.file_count())).size(20),
+                    text(format!("Size: {}", readable_size(repo.files.size()))).size(20),
+                ];
+                col = match stored_repo {
+                    Some(stored_repo) => col.push(
+                        text(format!(
+                            "Stored Repository: {}",
+                            stored_repo.path.to_string_lossy()
+                        ))
+                        .size(30),
+                    ),
+                    None => col.push(
+                        button(text("No stored repository found").size(30))
+                            .on_press(Message::SelectFolder(repo.uuid)),
+                    ),
+                };
+                col = self.view_repository_diff(col, repo.uuid, repository_diff, sync_status);
+                col
+            }
+            Pending::Errored(err) => Self::view_error(err),
+        }
+    }
+
+    // Helper to get login_data for back navigation
+    fn get_login_data(&self) -> Arc<ThisUser> {
+        match &self.state {
+            StateMachine::RepositoryDetails { login_data, .. } => login_data.clone(),
+            StateMachine::MainWindow { login_data } => login_data.clone(),
+            _ => panic!("Cannot get login data from current state"),
+        }
+    }
+
+    fn view_repository_diff(
+        &self,
+        mut col: Column<'static, Message>,
+        repo_uuid: Uuid,
+        repository_diff: &Pending<Arc<[Diff]>>,
+        sync_status: &Pending<()>,
+    ) -> Column<'static, Message> {
+        match repository_diff {
+            Pending::Unsent => col.push(text("Repository diff is not yet fetched.").size(30)),
+            Pending::InProgress => col.push(text("Repository diff is being fetched...").size(30)),
+            Pending::Ready(diff) => {
+                for diff in diff.iter() {
+                    col = col.push(
+                        text(format!(
+                            "{} - {}",
+                            match diff.change_type {
+                                pitsu_lib::ChangeType::Added => "ADDED",
+                                pitsu_lib::ChangeType::Modified => "MODIFIED",
+                                pitsu_lib::ChangeType::Removed => "REMOVED",
+                            },
+                            diff.full_path,
+                        ))
+                        .color(match diff.change_type {
+                            pitsu_lib::ChangeType::Added => *colors::ADDED_COLOR,
+                            pitsu_lib::ChangeType::Modified => *colors::MODIFIED_COLOR,
+                            pitsu_lib::ChangeType::Removed => *colors::REMOVED_COLOR,
+                        })
+                        .size(20),
+                    );
+                }
+                if diff.is_empty() {
+                    col.push(text("No changes detected.").size(30))
+                } else {
+                    match sync_status {
+                        Pending::Unsent => col.push(
+                            button(text("Sync Changes").size(30))
+                                .on_press(Message::Sync(repo_uuid, diff.clone())),
+                        ),
+                        Pending::InProgress => col.push(text("Syncing changes...").size(30)),
+                        Pending::Ready(_) => {
+                            col.push(text("Changes synced successfully.").size(30))
+                        }
+                        Pending::Errored(err) => col.push(
+                            text(format!("Error syncing changes: {err}"))
+                                .color(*colors::ERROR_COLOR)
+                                .size(30),
+                        ),
+                    }
+                }
+            }
+            Pending::Errored(err) => {
+                col.push(text(format!("Error fetching repository diff: {err}")).size(30))
             }
         }
     }
@@ -251,28 +262,6 @@ impl App {
                 } = &mut self.state
                 {
                     if *uuid == repository_uuid {
-                        // self.state = StateMachine::RepositoryDetails {
-                        //     repository_diff: Pending::Unsent, // Initially, we don't have the diff data
-                        //     login_data: login_data.clone(),
-                        //     repository_uuid: *uuid,
-                        //     repository: match (&*repository, &*stored_repository) {
-                        //         (Ok(repo), Ok(stored_repo)) => {
-                        //             Pending::Ready((repo.clone(), stored_repo.clone()))
-                        //         }
-                        //         (Err(err), Err(stored_err)) => Pending::Errored(
-                        //             format!(
-                        //                 "Failed to fetch repository or stored repository: {err}. Stored error: {stored_err}",
-                        //             )
-                        //             .into(),
-                        //         ),
-                        //         (Err(err), _) => Pending::Errored(
-                        //             format!("Failed to fetch repository: {err}").into(),
-                        //         ),
-                        //         (_, Err(stored_err)) => Pending::Errored(
-                        //             format!("Stored repository error: {stored_err}").into(),
-                        //         ),
-                        //     },
-                        // };
                         match &*repository {
                             Ok(repo) => {
                                 let stored_repo = match &*stored_repository {
@@ -314,7 +303,6 @@ impl App {
                 }
             }
             Message::SelectFolder(repository_uuid) => {
-                // Handle selecting a folder for the repository
                 return Task::perform(select_folder(repository_uuid), move |result| {
                     Message::StoredRepositoryReady(repository_uuid, Arc::new(result))
                 });
@@ -352,16 +340,16 @@ impl App {
                 }
             }
             Message::Sync(repository_uuid, diffs) => {
-                // Handle syncing diffs
                 if let StateMachine::RepositoryDetails {
                     login_data: _,
                     repository_uuid: _,
                     repository: Pending::Ready((repo, _stored)),
                     repository_diff: _,
-                    sync_status: _,
+                    sync_status,
                 } = &mut self.state
                 {
                     if repo.uuid == repository_uuid {
+                        *sync_status = Pending::InProgress;
                         let client = self.client.clone();
                         return Task::perform(
                             sync_diffs(client, repository_uuid, diffs),
@@ -384,8 +372,8 @@ impl App {
                             Ok(_) => Pending::Ready(()),
                             Err(err) => Pending::Errored(err.to_string().into()),
                         };
-                        // Update the repository diff after syncing
-                        *repository_diff = Pending::Ready(vec![].into()); // Assuming no changes after sync, adjust as needed
+
+                        *repository_diff = Pending::Ready(vec![].into());
                     }
                 }
             }
@@ -393,7 +381,7 @@ impl App {
         match &mut self.state {
             StateMachine::Startup(StartupState::Pending) => {
                 self.state = StateMachine::Startup(StartupState::Loading);
-                // Start fetching user data
+
                 let client = self.client.clone();
                 Task::perform(fetch_user(client), |result| match result {
                     Ok(login_data) => Message::ChangeState(StateMachine::MainWindow {
@@ -411,7 +399,6 @@ impl App {
                 repository_diff: _,
                 sync_status: _,
             } if *repository == Pending::Unsent => {
-                // Start fetching repository data
                 let client = self.client.clone();
                 *repository = Pending::InProgress;
                 let repository_uuid = match &self.state {
@@ -547,7 +534,6 @@ async fn sync_diffs(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -
         .path
         .clone();
     for diff in diffs.iter() {
-        // create the file in the stored repository, then make a request to /{uuid}/{filepath}
         let full_path = match diff.full_path.strip_prefix('/') {
             Some(stripped) => stripped,
             None => &diff.full_path,
@@ -555,11 +541,10 @@ async fn sync_diffs(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -
         let local_path = repository_path.join(full_path);
         match diff.change_type {
             pitsu_lib::ChangeType::Added | pitsu_lib::ChangeType::Modified => {
-                // Create or update the file
                 if let Some(parent) = local_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                // web request to get the file content
+
                 let response = client
                     .get(format!(
                         "{}/{}/{}",
@@ -582,13 +567,18 @@ async fn sync_diffs(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -
                 }
             }
             pitsu_lib::ChangeType::Removed => {
-                // Remove the file
                 if local_path.exists() {
                     std::fs::remove_file(&local_path)?;
                 }
             }
         }
     }
+    Ok(())
+}
 
-    todo!()
+fn panic_hook(info: &std::panic::PanicHookInfo) {
+    rfd::MessageDialog::new()
+        .set_title("PITSU Panic")
+        .set_description(info.to_string())
+        .show();
 }

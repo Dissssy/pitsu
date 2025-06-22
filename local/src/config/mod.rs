@@ -11,7 +11,6 @@ use std::{
 use uuid::Uuid;
 
 pub static PUBLIC_URL: &str = env!("PITSU_PUBLIC_URL");
-// static API_KEY: &str = env!("PITSU_API_KEY");
 
 lazy_static! {
     static ref CONFIG_DIR: PathBuf = {
@@ -114,7 +113,7 @@ impl Config {
                 None => return Ok(None),
             }
         };
-        // If the folder is not set, we need to load it. Because the user sets it via the UI we will NOT be CREATING the folders for them.
+
         if !path.exists() {
             return Err(anyhow::anyhow!(
                 "Stored repository path does not exist: {}",
@@ -135,7 +134,6 @@ impl Config {
             std::mem::swap(&mut new, repo);
             Ok(Some(repo.clone()))
         } else {
-            // unreachable, but we handle it gracefully
             log::warn!("Stored repository with UUID {uuid} not found in config");
             Ok(None)
         }
@@ -167,7 +165,7 @@ enum ConfigVersion {
 impl ConfigVersion {
     fn load(config_str: &str) -> Result<ConfigV1> {
         let config: ConfigVersion = toml::from_str(config_str)?;
-        // Eventually, we can upgrade older versions here.
+
         match config {
             ConfigVersion::V1(v1) => Ok(v1),
         }
