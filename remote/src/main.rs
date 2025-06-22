@@ -877,6 +877,7 @@ async fn create_repository(
 }
 
 async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
+    std::env::set_var("SEQ_API_KEY", env!("REMOTE_SEQ_API_KEY"));
     if let Err(e) = datalust_logger::init("pitsu") {
         eprintln!("Failed to initialize logger: {e}");
         std::process::exit(1);

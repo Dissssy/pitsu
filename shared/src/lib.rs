@@ -350,6 +350,18 @@ impl TryFrom<&str> for AccessLevel {
     }
 }
 
+impl std::fmt::Display for AccessLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let level_str = match self {
+            AccessLevel::None => "N",
+            AccessLevel::Read => "R",
+            AccessLevel::Write => "W",
+            AccessLevel::Admin => "RW+",
+        };
+        write!(f, "{level_str}")
+    }
+}
+
 impl TryFrom<String> for AccessLevel {
     type Error = anyhow::Error;
 
