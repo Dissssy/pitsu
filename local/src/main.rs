@@ -1,13 +1,14 @@
 mod colors;
 mod config;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use config::CONFIG;
 use iced::widget::{button, column, row, scrollable, text, text_editor, Column};
 use iced::{Element, Task};
-use pitsu_lib::{AccessLevel, CreateRemoteRepository, Diff, RemoteRepository, ThisUser};
+use pitsu_lib::{
+    AccessLevel, CreateRemoteRepository, Diff, FileUpload, RemoteRepository, ThisUser,
+};
 use reqwest::Client;
 use uuid::Uuid;
 
@@ -740,11 +741,11 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
         match diff.change_type {
             pitsu_lib::ChangeType::Removed | pitsu_lib::ChangeType::Modified => {
                 // File is missing from server or is different, upload it
-                // let file_data = std::fs::read(&local_path).map_err(|e| {
-                //     anyhow::anyhow!("Failed to read file {}: {}", local_path.display(), e)
-                // })?;
+                let file_data = std::fs::read(&local_path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read file {}: {}", local_path.display(), e)
+                })?;
                 let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
-                upload_file(&client, &local_path, &url).await?;
+                upload_file(&client, &file_data, &url).await?;
             }
             pitsu_lib::ChangeType::Added => {
                 // File on server exists but is not in local repository, delete the remote file
@@ -764,20 +765,18 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 }
 
 // curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
-async fn upload_file(
-    client: &Client,
-    /* file_bytes: &[u8] */ file_path: &PathBuf,
-    url: &str,
-) -> Result<()> {
+async fn upload_file(client: &Client, file_bytes: &[u8], url: &str) -> Result<()> {
     let response = client
         .post(url)
         .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
-        .multipart(
-            reqwest::multipart::Form::new()
-                // .part("file", reqwest::multipart::Part::bytes(file_bytes.to_vec())),
-                .file("file", file_path)
-                .await?,
-        )
+        // .multipart(
+        //     reqwest::multipart::Form::new()
+        //         // .part("file", reqwest::multipart::Part::bytes(file_bytes.to_vec())),
+        //         .file("file", file_path),
+        // )
+        .json(&FileUpload {
+            file: file_bytes.into(),
+        })
         .send()
         .await?;
 
