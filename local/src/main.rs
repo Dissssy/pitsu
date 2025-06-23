@@ -749,13 +749,23 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
                 // let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
                 // upload_file(&client, &file_data, &url).await?;
                 let file = UploadFile::new(diff.full_path.clone(), file_data)?;
-                pending_upload_size += file.size();
-                pending_uploads.push(file);
-                if pending_upload_size as f32 > ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.75) {
-                    let mut uploads = Vec::new();
+                let file_size = file.size();
+                if ((pending_upload_size + file_size) as f32)
+                    < ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.95)
+                {
+                    pending_upload_size += file.size();
+                    pending_uploads.push(file);
+                    if pending_upload_size as f32 > ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.75) {
+                        let mut uploads = Vec::new();
+                        std::mem::swap(&mut uploads, &mut pending_uploads);
+                        upload_files(&client, uploads, repository_uuid).await?;
+                        pending_upload_size = 0;
+                    }
+                } else {
+                    let mut uploads = vec![file];
                     std::mem::swap(&mut uploads, &mut pending_uploads);
                     upload_files(&client, uploads, repository_uuid).await?;
-                    pending_upload_size = 0;
+                    pending_upload_size = file_size;
                 }
             }
             pitsu_lib::ChangeType::Added => {
@@ -777,6 +787,14 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 
 // curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
 async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Result<()> {
+    log::info!("Uploading {} files to repository {}", files.len(), uuid);
+    for file in &files {
+        log::debug!(
+            "Preparing to upload file: {} ({} bytes)",
+            file.path,
+            file.size()
+        );
+    }
     let response = client
         .post(format!("{}/{}/.pit/upload", CONFIG.public_url(), uuid))
         .header("Authorization", format!("Bearer {}", CONFIG.api_key()))

@@ -1,6 +1,5 @@
 pub use anyhow;
 use anyhow::Result;
-use base64::Engine as _;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -10,14 +9,14 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const MAX_UPLOAD_SIZE: usize = 100 * 1024 * 1024; // 100 MB
+pub const MAX_UPLOAD_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
 
 lazy_static::lazy_static!(
     static ref ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
         &base64::alphabet::STANDARD,
         base64::engine::general_purpose::NO_PAD,
     );
-    static ref COMPRESSION: flate2::Compression = flate2::Compression::default();
+    static ref COMPRESSION: flate2::Compression = flate2::Compression::best();
 );
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -416,10 +415,10 @@ pub struct UploadFile {
 
 impl UploadFile {
     pub fn new(path: Arc<str>, raw_bytes: Vec<u8>) -> Result<Self> {
-        let bytes = encode_base64(&raw_bytes)?;
+        let bytes = compress(&raw_bytes)?;
         Ok(Self {
             path,
-            bytes: bytes.into(),
+            bytes,
             decoded: None,
         })
     }
@@ -427,7 +426,7 @@ impl UploadFile {
         if let Some(decoded) = &self.decoded {
             return Ok(decoded.clone());
         }
-        let decoded = decode_base64(&self.bytes)?;
+        let decoded = decompress(&self.bytes)?;
         self.decoded = Some(decoded.clone());
         Ok(decoded)
     }
@@ -469,20 +468,16 @@ impl UploadFile {
 //     Ok(decompressed_data.into())
 // }
 
-fn encode_base64(data: &[u8]) -> Result<Arc<str>> {
+fn compress(data: &[u8]) -> Result<Arc<[u8]>> {
     let mut compressed_data = Vec::new();
     let mut encoder = flate2::write::GzEncoder::new(&mut compressed_data, *COMPRESSION);
     encoder.write_all(data)?;
     encoder.finish()?;
-    let encoded = ENGINE.encode(&compressed_data);
-    Ok(Arc::from(encoded))
+    Ok(compressed_data.into())
 }
 
-fn decode_base64(encoded: &Arc<[u8]>) -> Result<Arc<[u8]>> {
-    let decoded = ENGINE
-        .decode(encoded)
-        .map_err(|e| anyhow::anyhow!("Failed to decode base64: {}", e))?;
-    let mut decoder = flate2::read::GzDecoder::new(&decoded[..]);
+fn decompress(compressed: &Arc<[u8]>) -> Result<Arc<[u8]>> {
+    let mut decoder = flate2::read::GzDecoder::new(&compressed[..]);
     let mut decompressed_data = Vec::new();
     decoder
         .read_to_end(&mut decompressed_data)
