@@ -581,12 +581,12 @@ async fn repository_path(
 }
 
 // curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
-#[post("{uuid}/{path:.*}")]
+#[post("{uuid}/.pit/upload")]
 async fn upload_file(
     req: actix_web::HttpRequest,
-    path_stuff: actix_web::web::Path<(uuid::Uuid, String)>,
+    uuid: actix_web::web::Path<uuid::Uuid>,
     pool: Data<Pool>,
-    body: Json<FileUpload>,
+    mut body: Json<FileUpload>,
 ) -> impl Responder {
     // BEHAVIOUR:
     // 1. Check if the user has write access to the repository
@@ -604,7 +604,7 @@ async fn upload_file(
             return HttpResponse::Unauthorized().body("Unauthorized");
         }
     };
-    let (uuid, path) = path_stuff.into_inner();
+    // let (uuid, path) = path_stuff.into_inner();
     // Check if the user has access to the repository
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
@@ -649,26 +649,41 @@ async fn upload_file(
     };
     let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
     let repo_path = format!("{}/{}", root_path, repo.uuid);
-    let full_path = format!("{repo_path}/{path}");
-    log::debug!("Full path to file: {full_path}");
-    // Ensure the directory exists
-    if let Some(parent) = std::path::Path::new(&full_path).parent() {
-        if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            log::error!("Failed to create directory: {err}");
-            return HttpResponse::InternalServerError().body("Failed to create directory");
+    let mut cleanup_paths = Vec::new();
+    for file in &mut body.files {
+        let full_path = format!("{repo_path}/{}", file.path);
+        log::debug!("Full path to file: {full_path}");
+        // Ensure the directory exists
+        if let Some(parent) = std::path::Path::new(&full_path).parent() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                log::error!("Failed to create directory: {err}");
+                return HttpResponse::InternalServerError().body("Failed to create directory");
+            }
         }
-    }
-    // Write the file to the specified path
-    if let Err(err) = tokio::fs::write(&full_path, &body.file).await {
-        log::error!("Failed to write file: {err}");
-        return HttpResponse::InternalServerError().body("Failed to write file");
+        // retrieve file bytes
+        let bytes = match file.get_bytes() {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                log::error!("Failed to get file bytes: {err}");
+                return HttpResponse::BadRequest().body("Invalid file data");
+            }
+        };
+        // Write the file to the specified path
+        if let Err(err) = tokio::fs::write(&full_path, &bytes).await {
+            log::error!("Failed to write file: {err}");
+            return HttpResponse::InternalServerError().body("Failed to write file");
+        }
+        cleanup_paths.push(full_path.clone());
     }
     // Update the repository file hashes
     let root_folder = match RootFolder::ingest_folder(&repo_path.into()) {
         Ok(folder) => folder,
         Err(err) => {
             log::error!("Failed to ingest folder: {err}");
-            tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+            for path in cleanup_paths {
+                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+            }
             return HttpResponse::InternalServerError().body("Failed to ingest folder");
         }
     };
@@ -676,7 +691,10 @@ async fn upload_file(
         Ok(value) => value,
         Err(err) => {
             log::error!("Failed to serialize file hashes: {err}");
-            tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if serialization fails
+            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+            for path in cleanup_paths {
+                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+            }
             return HttpResponse::InternalServerError().body("Failed to serialize file hashes");
         }
     };
@@ -688,14 +706,20 @@ async fn upload_file(
         Ok(_) => {
             if let Err(err) = transaction.commit().await {
                 log::error!("Failed to commit transaction: {err}");
-                tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if commit fails
+                // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+                for path in cleanup_paths {
+                    let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+                }
                 return HttpResponse::InternalServerError().body("Failed to commit changes");
             }
             HttpResponse::Ok().body("File uploaded successfully")
         }
         Err(err) => {
             log::error!("Failed to update file hashes: {err}");
-            tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if update fails
+            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+            for path in cleanup_paths {
+                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+            }
             transaction.rollback().await.ok(); // Ignore rollback errors
             HttpResponse::InternalServerError().body("Failed to update file hashes")
         }

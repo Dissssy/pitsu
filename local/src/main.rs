@@ -7,7 +7,7 @@ use config::CONFIG;
 use iced::widget::{button, column, row, scrollable, text, text_editor, Column};
 use iced::{Element, Task};
 use pitsu_lib::{
-    AccessLevel, CreateRemoteRepository, Diff, FileUpload, RemoteRepository, ThisUser,
+    AccessLevel, CreateRemoteRepository, Diff, FileUpload, RemoteRepository, ThisUser, UploadFile,
 };
 use reqwest::Client;
 use uuid::Uuid;
@@ -732,6 +732,8 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
         .ok_or_else(|| anyhow::anyhow!("No stored repository found for UUID: {}", repository_uuid))?
         .path
         .clone();
+    let mut pending_uploads = Vec::new();
+    let mut pending_upload_size = 0;
     for diff in diffs.iter() {
         let full_path = match diff.full_path.strip_prefix('/') {
             Some(stripped) => stripped,
@@ -744,8 +746,17 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
                 let file_data = std::fs::read(&local_path).map_err(|e| {
                     anyhow::anyhow!("Failed to read file {}: {}", local_path.display(), e)
                 })?;
-                let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
-                upload_file(&client, &file_data, &url).await?;
+                // let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
+                // upload_file(&client, &file_data, &url).await?;
+                let file = UploadFile::new(diff.full_path.clone(), file_data)?;
+                pending_upload_size += file.size();
+                pending_uploads.push(file);
+                if pending_upload_size as f32 > ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.75) {
+                    let mut uploads = Vec::new();
+                    std::mem::swap(&mut uploads, &mut pending_uploads);
+                    upload_files(&client, uploads, repository_uuid).await?;
+                    pending_upload_size = 0;
+                }
             }
             pitsu_lib::ChangeType::Added => {
                 // File on server exists but is not in local repository, delete the remote file
@@ -765,18 +776,16 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 }
 
 // curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
-async fn upload_file(client: &Client, file_bytes: &[u8], url: &str) -> Result<()> {
+async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Result<()> {
     let response = client
-        .post(url)
+        .post(format!("{}/{}/.pit/upload", CONFIG.public_url(), uuid))
         .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
         // .multipart(
         //     reqwest::multipart::Form::new()
         //         // .part("file", reqwest::multipart::Part::bytes(file_bytes.to_vec())),
         //         .file("file", file_path),
         // )
-        .json(&FileUpload {
-            file: file_bytes.into(),
-        })
+        .json(&FileUpload { files })
         .send()
         .await?;
 
@@ -788,7 +797,7 @@ async fn upload_file(client: &Client, file_bytes: &[u8], url: &str) -> Result<()
             .text()
             .await
             .unwrap_or_else(|_| "No response text".to_string());
-        log::error!("Failed to upload file: {url} - {status} - {text}");
+        log::error!("Failed to upload files: {status} - {text}");
         Err(anyhow::anyhow!(
             "Failed to upload file: {} - {}",
             status,
