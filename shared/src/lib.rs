@@ -1,9 +1,22 @@
 pub use anyhow;
 use anyhow::Result;
+use base64::Engine as _;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    io::{Read as _, Write as _},
+    path::PathBuf,
+    sync::Arc,
+};
 use uuid::Uuid;
+
+lazy_static::lazy_static!(
+    static ref ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::general_purpose::NO_PAD,
+    );
+    static ref COMPRESSION: flate2::Compression = flate2::Compression::default();
+);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
@@ -384,4 +397,39 @@ pub struct SetAccess {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CreateRemoteRepository {
     pub name: Arc<str>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FileUpload {
+    #[serde(serialize_with = "encode_base64")]
+    #[serde(deserialize_with = "decode_base64")]
+    pub file: Arc<[u8]>,
+}
+
+fn encode_base64<S>(data: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut compressed_data = Vec::new();
+    let mut encoder = flate2::write::GzEncoder::new(&mut compressed_data, *COMPRESSION);
+    encoder.write_all(data).map_err(serde::ser::Error::custom)?;
+    encoder.finish().map_err(serde::ser::Error::custom)?;
+    let encoded = ENGINE.encode(&compressed_data);
+    serializer.serialize_str(&encoded)
+}
+
+fn decode_base64<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let encoded: String = Deserialize::deserialize(deserializer)?;
+    let decoded = ENGINE
+        .decode(encoded.as_bytes())
+        .map_err(serde::de::Error::custom)?;
+    let mut decoder = flate2::read::GzDecoder::new(&decoded[..]);
+    let mut decompressed_data = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed_data)
+        .map_err(serde::de::Error::custom)?;
+    Ok(decompressed_data.into())
 }

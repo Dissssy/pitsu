@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
-use actix_multipart::form::{bytes::Bytes, MultipartForm};
-use actix_web::{delete, get, patch, post, web::Data, App, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    delete, get, patch, post,
+    web::{Data, Json},
+    App, HttpResponse, HttpServer, Responder,
+};
 use clap::Parser as _;
 mod cornucopia;
 use deadpool_postgres::Pool;
 use pitsu_lib::{
-    anyhow::Result, AccessLevel, CreateRemoteRepository, RemoteRepository, RootFolder,
+    anyhow::Result, AccessLevel, CreateRemoteRepository, FileUpload, RemoteRepository, RootFolder,
     SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess,
 };
 
@@ -583,7 +586,7 @@ async fn upload_file(
     req: actix_web::HttpRequest,
     path_stuff: actix_web::web::Path<(uuid::Uuid, String)>,
     pool: Data<Pool>,
-    body: MultipartForm<FileUpload>,
+    body: Json<FileUpload>,
 ) -> impl Responder {
     // BEHAVIOUR:
     // 1. Check if the user has write access to the repository
@@ -656,7 +659,7 @@ async fn upload_file(
         }
     }
     // Write the file to the specified path
-    if let Err(err) = tokio::fs::write(&full_path, &body.file.data).await {
+    if let Err(err) = tokio::fs::write(&full_path, &body.file).await {
         log::error!("Failed to write file: {err}");
         return HttpResponse::InternalServerError().body("Failed to write file");
     }
@@ -699,11 +702,11 @@ async fn upload_file(
     }
 }
 
-#[derive(Debug, MultipartForm)]
-struct FileUpload {
-    #[multipart(rename = "file", limit = "100MB")]
-    file: Bytes,
-}
+// #[derive(Debug, MultipartForm)]
+// struct FileUpload {
+//     #[multipart(limit = "100MB")]
+//     file: Bytes,
+// }
 
 // curl -X DELETE -H "Authorization Bearer <token>" https://pit.p51.nl/{uuid}/{path}
 #[delete("/{uuid}/{path:.*}")]
