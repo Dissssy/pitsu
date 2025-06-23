@@ -70,7 +70,6 @@ enum Message {
     SyncDown(Uuid, Arc<[Diff]>),
     SyncUp(Uuid, Arc<[Diff]>),
     Synced(Uuid, Arc<Result<()>>),
-    Refresh(Uuid),
     Edit(text_editor::Action),
 }
 
@@ -193,7 +192,15 @@ impl App {
                                 login_data: self.get_login_data()
                             }
                         )),
-                        button(text("Refresh").size(20)).on_press(Message::Refresh(repo.uuid)),
+                        button(text("Refresh").size(20)).on_press(Message::ChangeState(
+                            StateMachine::RepositoryDetails {
+                                login_data: self.get_login_data(),
+                                repository_uuid: repo.uuid,
+                                repository: Pending::Unsent,
+                                repository_diff: Pending::Unsent,
+                                sync_status: Pending::Unsent,
+                            }
+                        )),
                     ]
                     .spacing(10),
                     text(format!("Repository Details: {}", repo.name)).size(30),
@@ -416,32 +423,6 @@ impl App {
                                 None
                             }
                         };
-                    }
-                }
-            }
-            Message::Refresh(repository_uuid) => {
-                if let StateMachine::RepositoryDetails {
-                    login_data: _,
-                    repository_uuid: _,
-                    repository: Pending::Ready((repo, _stored)),
-                    repository_diff: _,
-                    sync_status,
-                } = &mut self.state
-                {
-                    if repo.uuid == repository_uuid {
-                        *sync_status = Pending::InProgress;
-                        let client = self.client.clone();
-                        return Task::perform(
-                            fetch_repository(client, repository_uuid),
-                            move |result| {
-                                let stored_repo = CONFIG.get_stored(repository_uuid);
-                                Message::RepositoryReady(
-                                    repository_uuid,
-                                    Arc::new(result.map(Arc::new)),
-                                    Arc::new(stored_repo),
-                                )
-                            },
-                        );
                     }
                 }
             }
@@ -751,11 +732,11 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
                 let file = UploadFile::new(diff.full_path.clone(), file_data)?;
                 let file_size = file.size();
                 if ((pending_upload_size + file_size) as f32)
-                    < ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.95)
+                    < ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.1)
                 {
                     pending_upload_size += file.size();
                     pending_uploads.push(file);
-                    if pending_upload_size as f32 > ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.75) {
+                    if pending_upload_size as f32 > ((pitsu_lib::MAX_UPLOAD_SIZE as f32) * 0.05) {
                         let mut uploads = Vec::new();
                         std::mem::swap(&mut uploads, &mut pending_uploads);
                         upload_files(&client, uploads, repository_uuid).await?;
@@ -775,6 +756,9 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
             }
         }
     }
+    if !pending_uploads.is_empty() {
+        upload_files(&client, pending_uploads, repository_uuid).await?;
+    }
     Ok(())
 }
 
@@ -787,6 +771,9 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
 
 // curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
 async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
     log::info!("Uploading {} files to repository {}", files.len(), uuid);
     for file in &files {
         log::debug!(
