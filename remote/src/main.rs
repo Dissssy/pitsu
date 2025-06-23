@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{
     delete, get, patch, post,
-    web::{Data, Json},
+    web::{Data, Json, JsonConfig},
     App, HttpResponse, HttpServer, Responder,
 };
 use clap::Parser as _;
@@ -910,8 +910,12 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
         eprintln!("Failed to initialize logger: {e}");
         std::process::exit(1);
     };
+    let json_cfg = JsonConfig::default().limit(
+        100 * 1024 * 1024, // 100 MB
+    );
     HttpServer::new(move || {
         App::new()
+            .app_data(json_cfg.clone())
             .app_data(Data::new(pool.clone()))
             .service(root)
             // Api Routes
