@@ -104,11 +104,12 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!("Failed to lock config: {}", e))?;
             match config.stored_repositories.get(&uuid) {
                 Some(repo) => {
-                    if repo.folder.is_some() {
-                        return Ok(Some(repo.clone()));
-                    } else {
-                        repo.path.clone()
-                    }
+                    // if repo.folder.is_some() {
+                    //     return Ok(Some(repo.clone()));
+                    // } else {
+                    //     repo.path.clone()
+                    // }
+                    repo.path.clone()
                 }
                 None => return Ok(None),
             }

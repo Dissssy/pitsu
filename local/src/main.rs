@@ -1,12 +1,13 @@
 mod colors;
 mod config;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use config::CONFIG;
-use iced::widget::{button, column, text, Column};
-use iced::Task;
-use pitsu_lib::{Diff, RemoteRepository, ThisUser};
+use iced::widget::{button, column, row, scrollable, text, text_editor, Column};
+use iced::{Element, Task};
+use pitsu_lib::{AccessLevel, CreateRemoteRepository, Diff, RemoteRepository, ThisUser};
 use reqwest::Client;
 use uuid::Uuid;
 
@@ -51,6 +52,7 @@ fn setup() {
 struct App {
     state: StateMachine,
     client: Client,
+    text_editor: text_editor::Content,
 }
 
 #[derive(Debug, Clone)]
@@ -64,18 +66,21 @@ enum Message {
     ),
     SelectFolder(Uuid),
     StoredRepositoryReady(Uuid, Arc<Result<Arc<StoredRepository>>>),
-    Sync(Uuid, Arc<[Diff]>),
+    SyncDown(Uuid, Arc<[Diff]>),
+    SyncUp(Uuid, Arc<[Diff]>),
     Synced(Uuid, Arc<Result<()>>),
+    Refresh(Uuid),
+    Edit(text_editor::Action),
 }
 
 impl App {
-    pub fn view(&self) -> Column<Message> {
+    pub fn view(&self) -> Element<Message> {
         match &self.state {
             StateMachine::Startup(StartupState::Pending) => Self::view_loading("Loading..."),
             StateMachine::Startup(StartupState::Loading) => {
                 Self::view_loading("Loading user data...")
             }
-            StateMachine::Startup(StartupState::Errored(err)) => Self::view_error(err),
+            StateMachine::Startup(StartupState::Errored(err)) => Self::view_error(err.clone()),
             StateMachine::MainWindow { login_data } => self.view_main_window(login_data),
             StateMachine::RepositoryDetails {
                 login_data: _,
@@ -84,22 +89,43 @@ impl App {
                 repository_diff,
                 sync_status,
             } => self.view_repository_details(repository, repository_diff, sync_status),
+            StateMachine::CreateRepository { login_data, upload } => match upload {
+                Pending::Unsent => column![
+                    text("Create New Repository").size(30),
+                    text(format!("Logged in as: {}", login_data.user.username)).size(20),
+                    text("Repository Name:").size(20),
+                    text_editor(&self.text_editor)
+                        .placeholder("Enter repository name")
+                        .on_action(Message::Edit)
+                        .size(20),
+                    button(text("Create").size(20)).on_press(Message::Edit(
+                        text_editor::Action::Edit(text_editor::Edit::Enter),
+                    )),
+                ]
+                .into(),
+                Pending::InProgress => Self::view_loading("Creating repository..."),
+                Pending::Ready(_) => {
+                    column![text("Repository created successfully!").size(30)].into()
+                }
+                Pending::Errored(err) => Self::view_error(err.clone()),
+            },
             #[allow(unreachable_patterns)]
-            e => column![text(format!("Current state: {e:?}")).size(30)],
+            e => column![text(format!("Current state: {e:?}")).size(30)].into(),
         }
     }
 
-    fn view_loading(msg: &str) -> Column<Message> {
-        column![text(msg).size(30)]
+    fn view_loading(msg: &str) -> Element<Message> {
+        column![text(msg).size(30)].into()
     }
 
-    fn view_error(err: &Arc<str>) -> Column<'static, Message> {
+    fn view_error<'a>(err: Arc<str>) -> Element<'a, Message> {
         column![text(format!("Error: {err}"))
             .color(*colors::ERROR_COLOR)
             .size(30)]
+        .into()
     }
 
-    fn view_main_window(&self, login_data: &Arc<ThisUser>) -> Column<Message> {
+    fn view_main_window(&self, login_data: &Arc<ThisUser>) -> Element<Message> {
         let mut col = Column::with_children(vec![text(format!(
             "Welcome, {}!",
             login_data.user.username
@@ -136,7 +162,15 @@ impl App {
                 )),
             );
         }
-        col
+        col = col.push(
+            button(text("Create New Repository")).on_press(Message::ChangeState(
+                StateMachine::CreateRepository {
+                    login_data: login_data.clone(),
+                    upload: Pending::Unsent,
+                },
+            )),
+        );
+        col.into()
     }
 
     fn view_repository_details(
@@ -144,7 +178,7 @@ impl App {
         repository: &Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>, // Fixed generics syntax here
         repository_diff: &Pending<Arc<[Diff]>>,
         sync_status: &Pending<()>,
-    ) -> Column<'static, Message> {
+    ) -> Element<Message> {
         match repository {
             Pending::Unsent => Self::view_loading("Fetching repository data..."),
             Pending::InProgress => Self::view_loading("Repository data is being fetched..."),
@@ -152,11 +186,15 @@ impl App {
                 let repo = repo.as_ref();
                 // Add Back button at the top
                 let mut col = column![
-                    button(text("Back").size(20)).on_press(Message::ChangeState(
-                        StateMachine::MainWindow {
-                            login_data: self.get_login_data()
-                        }
-                    )),
+                    row![
+                        button(text("Back").size(20)).on_press(Message::ChangeState(
+                            StateMachine::MainWindow {
+                                login_data: self.get_login_data()
+                            }
+                        )),
+                        button(text("Refresh").size(20)).on_press(Message::Refresh(repo.uuid)),
+                    ]
+                    .spacing(10),
                     text(format!("Repository Details: {}", repo.name)).size(30),
                     text(format!("UUID: {}", repo.uuid)).size(20),
                     text(format!("Files: {}", repo.files.file_count())).size(20),
@@ -175,10 +213,16 @@ impl App {
                             .on_press(Message::SelectFolder(repo.uuid)),
                     ),
                 };
-                col = self.view_repository_diff(col, repo.uuid, repository_diff, sync_status);
-                col
+                col = self.view_repository_diff(
+                    col,
+                    repo.uuid,
+                    repo.access_level,
+                    repository_diff,
+                    sync_status,
+                );
+                scrollable::Scrollable::new(col).into()
             }
-            Pending::Errored(err) => Self::view_error(err),
+            Pending::Errored(err) => Self::view_error(err.clone()),
         }
     }
 
@@ -195,6 +239,7 @@ impl App {
         &self,
         mut col: Column<'static, Message>,
         repo_uuid: Uuid,
+        repo_access_level: AccessLevel,
         repository_diff: &Pending<Arc<[Diff]>>,
         sync_status: &Pending<()>,
     ) -> Column<'static, Message> {
@@ -225,10 +270,19 @@ impl App {
                     col.push(text("No changes detected.").size(30))
                 } else {
                     match sync_status {
-                        Pending::Unsent => col.push(
-                            button(text("Sync Changes").size(30))
-                                .on_press(Message::Sync(repo_uuid, diff.clone())),
-                        ),
+                        Pending::Unsent => {
+                            col = col.push(
+                                button(text("Sync Down").size(30))
+                                    .on_press(Message::SyncDown(repo_uuid, diff.clone())),
+                            );
+                            if repo_access_level >= AccessLevel::Write {
+                                col = col.push(
+                                    button(text("Sync Up").size(30))
+                                        .on_press(Message::SyncUp(repo_uuid, diff.clone())),
+                                );
+                            }
+                            col
+                        }
                         Pending::InProgress => col.push(text("Syncing changes...").size(30)),
                         Pending::Ready(_) => {
                             col.push(text("Changes synced successfully.").size(30))
@@ -246,11 +300,36 @@ impl App {
             }
         }
     }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Start => {}
             Message::ChangeState(new_state) => {
                 self.state = new_state;
+            }
+            Message::Edit(action) => {
+                if let text_editor::Action::Edit(text_editor::Edit::Enter) = &action {
+                    let string = self.text_editor.text();
+                    if let StateMachine::CreateRepository { login_data, upload } = &mut self.state {
+                        *upload = Pending::InProgress;
+                        let login_data = login_data.clone();
+                        let client = self.client.clone();
+                        return Task::perform(
+                            create_repository(client, string.into()),
+                            move |result| match result {
+                                Ok(login_data) => {
+                                    Message::ChangeState(StateMachine::MainWindow { login_data })
+                                }
+                                Err(err) => Message::ChangeState(StateMachine::CreateRepository {
+                                    login_data: login_data.clone(),
+                                    upload: Pending::Errored(err.to_string().into()),
+                                }),
+                            },
+                        );
+                    }
+                } else {
+                    self.text_editor.perform(action);
+                }
             }
             Message::RepositoryReady(repository_uuid, repository, stored_repository) => {
                 if let StateMachine::RepositoryDetails {
@@ -339,7 +418,7 @@ impl App {
                     }
                 }
             }
-            Message::Sync(repository_uuid, diffs) => {
+            Message::Refresh(repository_uuid) => {
                 if let StateMachine::RepositoryDetails {
                     login_data: _,
                     repository_uuid: _,
@@ -352,28 +431,87 @@ impl App {
                         *sync_status = Pending::InProgress;
                         let client = self.client.clone();
                         return Task::perform(
-                            sync_diffs(client, repository_uuid, diffs),
+                            fetch_repository(client, repository_uuid),
+                            move |result| {
+                                let stored_repo = CONFIG.get_stored(repository_uuid);
+                                Message::RepositoryReady(
+                                    repository_uuid,
+                                    Arc::new(result.map(Arc::new)),
+                                    Arc::new(stored_repo),
+                                )
+                            },
+                        );
+                    }
+                }
+            }
+            Message::SyncDown(repository_uuid, diffs) => {
+                if let StateMachine::RepositoryDetails {
+                    login_data: _,
+                    repository_uuid: _,
+                    repository: Pending::Ready((repo, _stored)),
+                    repository_diff: _,
+                    sync_status,
+                } = &mut self.state
+                {
+                    if repo.uuid == repository_uuid {
+                        *sync_status = Pending::InProgress;
+                        let client = self.client.clone();
+                        return Task::perform(
+                            sync_diffs_down(client, repository_uuid, diffs),
                             move |result| Message::Synced(repository_uuid, Arc::new(result)),
                         );
                     }
                 }
             }
-            Message::Synced(repository_uuid, result) => {
+            Message::SyncUp(repository_uuid, diffs) => {
                 if let StateMachine::RepositoryDetails {
                     login_data: _,
                     repository_uuid: _,
                     repository: Pending::Ready((repo, _stored)),
-                    repository_diff,
+                    repository_diff: _,
                     sync_status,
                 } = &mut self.state
                 {
                     if repo.uuid == repository_uuid {
+                        *sync_status = Pending::InProgress;
+                        let client = self.client.clone();
+                        return Task::perform(
+                            sync_diffs_up(client, repository_uuid, diffs),
+                            move |result| Message::Synced(repository_uuid, Arc::new(result)),
+                        );
+                    }
+                }
+            }
+            Message::Synced(sync_uuid, result) => {
+                if let StateMachine::RepositoryDetails {
+                    login_data: _,
+                    repository_uuid,
+                    repository,
+                    repository_diff,
+                    sync_status,
+                } = &mut self.state
+                {
+                    if repository.ready() && sync_uuid == *repository_uuid {
                         *sync_status = match &*result {
                             Ok(_) => Pending::Ready(()),
                             Err(err) => Pending::Errored(err.to_string().into()),
                         };
 
                         *repository_diff = Pending::Ready(vec![].into());
+                        *repository = Pending::InProgress;
+                        let client = self.client.clone();
+                        let repository_uuid = *repository_uuid;
+                        return Task::perform(
+                            fetch_repository(client, repository_uuid),
+                            move |result| {
+                                let stored_repo = CONFIG.get_stored(repository_uuid);
+                                Message::RepositoryReady(
+                                    repository_uuid,
+                                    Arc::new(result.map(Arc::new)),
+                                    Arc::new(stored_repo),
+                                )
+                            },
+                        );
                     }
                 }
             }
@@ -427,6 +565,10 @@ enum StateMachine {
     MainWindow {
         login_data: Arc<ThisUser>,
     },
+    CreateRepository {
+        login_data: Arc<ThisUser>,
+        upload: Pending<()>,
+    },
     RepositoryDetails {
         login_data: Arc<ThisUser>,
         repository_uuid: Uuid,
@@ -455,6 +597,12 @@ enum Pending<T> {
     InProgress,
     Ready(T),
     Errored(Arc<str>),
+}
+
+impl<T> Pending<T> {
+    pub fn ready(&self) -> bool {
+        matches!(self, Pending::Ready(_))
+    }
 }
 
 impl<T> PartialEq for Pending<T> {
@@ -526,7 +674,7 @@ async fn select_folder(repository_uuid: Uuid) -> Result<Arc<StoredRepository>> {
     Ok(stored_repo)
 }
 
-async fn sync_diffs(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -> Result<()> {
+async fn sync_diffs_down(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -> Result<()> {
     let repository_path = CONFIG
         .get_stored(repository_uuid)?
         .as_ref()
@@ -576,9 +724,111 @@ async fn sync_diffs(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -
     Ok(())
 }
 
+async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>) -> Result<()> {
+    let repository_path = CONFIG
+        .get_stored(repository_uuid)?
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No stored repository found for UUID: {}", repository_uuid))?
+        .path
+        .clone();
+    for diff in diffs.iter() {
+        let full_path = match diff.full_path.strip_prefix('/') {
+            Some(stripped) => stripped,
+            None => &diff.full_path,
+        };
+        let local_path = repository_path.join(full_path);
+        match diff.change_type {
+            pitsu_lib::ChangeType::Removed | pitsu_lib::ChangeType::Modified => {
+                // File is missing from server or is different, upload it
+                // let file_data = std::fs::read(&local_path).map_err(|e| {
+                //     anyhow::anyhow!("Failed to read file {}: {}", local_path.display(), e)
+                // })?;
+                let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
+                upload_file(&client, &local_path, &url).await?;
+            }
+            pitsu_lib::ChangeType::Added => {
+                // File on server exists but is not in local repository, delete the remote file
+                let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
+                delete_file(&client, &url).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn panic_hook(info: &std::panic::PanicHookInfo) {
     rfd::MessageDialog::new()
         .set_title("PITSU Panic")
         .set_description(info.to_string())
         .show();
+}
+
+// curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
+async fn upload_file(
+    client: &Client,
+    /* file_bytes: &[u8] */ file_path: &PathBuf,
+    url: &str,
+) -> Result<()> {
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
+        .multipart(
+            reqwest::multipart::Form::new()
+                // .part("file", reqwest::multipart::Part::bytes(file_bytes.to_vec())),
+                .file("file", file_path)
+                .await?,
+        )
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "No response text".to_string());
+        log::error!("Failed to upload file: {url} - {status} - {text}");
+        Err(anyhow::anyhow!(
+            "Failed to upload file: {} - {}",
+            status,
+            text
+        ))
+    }
+}
+
+// curl -X DELETE -H "Authorization Bearer <token>" https://pit.p51.nl/{uuid}/{path}
+async fn delete_file(client: &Client, url: &str) -> Result<()> {
+    let response = client
+        .delete(url)
+        .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to delete file: {}",
+            response.status()
+        ))
+    }
+}
+
+async fn create_repository(client: Client, name: Arc<str>) -> Result<Arc<ThisUser>> {
+    let response = client
+        .post(format!("{}/api/repository", CONFIG.public_url()))
+        .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
+        .json(&CreateRemoteRepository { name })
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        // get updated user data
+        let user = fetch_user(client).await?;
+        Ok(Arc::new(user))
+    } else {
+        Err(anyhow::anyhow!("Failed to create repository"))
+    }
 }
