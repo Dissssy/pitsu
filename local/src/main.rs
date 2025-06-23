@@ -74,14 +74,14 @@ enum Message {
 }
 
 impl App {
-    pub fn view(&self) -> Element<Message> {
+    pub fn view<'a>(&'a self) -> Element<'a, Message> {
         match &self.state {
             StateMachine::Startup(StartupState::Pending) => Self::view_loading("Loading..."),
             StateMachine::Startup(StartupState::Loading) => {
                 Self::view_loading("Loading user data...")
             }
             StateMachine::Startup(StartupState::Errored(err)) => Self::view_error(err.clone()),
-            StateMachine::MainWindow { login_data } => self.view_main_window(login_data),
+            StateMachine::MainWindow { login_data } => self.view_main_window(login_data.clone()),
             StateMachine::RepositoryDetails {
                 login_data: _,
                 repository_uuid: _,
@@ -114,7 +114,7 @@ impl App {
         }
     }
 
-    fn view_loading(msg: &str) -> Element<Message> {
+    fn view_loading<'a>(msg: &'a str) -> Element<'a, Message> {
         column![text(msg).size(30)].into()
     }
 
@@ -125,7 +125,7 @@ impl App {
         .into()
     }
 
-    fn view_main_window(&self, login_data: &Arc<ThisUser>) -> Element<Message> {
+    fn view_main_window<'a>(&'a self, login_data: Arc<ThisUser>) -> Element<'a, Message> {
         let mut col = Column::with_children(vec![text(format!(
             "Welcome, {}!",
             login_data.user.username
@@ -173,12 +173,12 @@ impl App {
         col.into()
     }
 
-    fn view_repository_details(
-        &self,
-        repository: &Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>, // Fixed generics syntax here
-        repository_diff: &Pending<Arc<[Diff]>>,
-        sync_status: &Pending<()>,
-    ) -> Element<Message> {
+    fn view_repository_details<'a>(
+        &'a self,
+        repository: &'a Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>, // Fixed generics syntax here
+        repository_diff: &'a Pending<Arc<[Diff]>>,
+        sync_status: &'a Pending<()>,
+    ) -> Element<'a, Message> {
         match repository {
             Pending::Unsent => Self::view_loading("Fetching repository data..."),
             Pending::InProgress => Self::view_loading("Repository data is being fetched..."),
@@ -243,14 +243,14 @@ impl App {
         }
     }
 
-    fn view_repository_diff(
-        &self,
-        mut col: Column<'static, Message>,
+    fn view_repository_diff<'a>(
+        &'a self,
+        mut col: Column<'a, Message>,
         repo_uuid: Uuid,
         repo_access_level: AccessLevel,
-        repository_diff: &Pending<Arc<[Diff]>>,
-        sync_status: &Pending<()>,
-    ) -> Column<'static, Message> {
+        repository_diff: &'a Pending<Arc<[Diff]>>,
+        sync_status: &'a Pending<()>,
+    ) -> Column<'a, Message> {
         match repository_diff {
             Pending::Unsent => col.push(text("Repository diff is not yet fetched.").size(30)),
             Pending::InProgress => col.push(text("Repository diff is being fetched...").size(30)),
