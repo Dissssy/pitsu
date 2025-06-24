@@ -1,5 +1,6 @@
 pub use anyhow;
 use anyhow::Result;
+use base64::Engine as _;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,7 +14,7 @@ pub const MAX_UPLOAD_SIZE: usize = 1024 * 1024 * 1024;
 
 lazy_static::lazy_static!(
     static ref ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
-        &base64::alphabet::STANDARD,
+        &base64::alphabet::URL_SAFE,
         base64::engine::general_purpose::NO_PAD,
     );
     static ref COMPRESSION: flate2::Compression = flate2::Compression::best();
@@ -453,4 +454,23 @@ fn decompress(compressed: &Arc<[u8]>) -> Result<Arc<[u8]>> {
         .read_to_end(&mut decompressed_data)
         .map_err(|e| anyhow::anyhow!("Failed to decompress data: {}", e))?;
     Ok(decompressed_data.into())
+}
+
+pub fn encode_base64(data: &[u8]) -> String {
+    ENGINE.encode(data)
+}
+
+pub fn decode_base64(data: &str) -> Result<Vec<u8>> {
+    ENGINE
+        .decode(data)
+        .map_err(|e| anyhow::anyhow!("Failed to decode base64 data: {}", e))
+}
+
+pub fn encode_string_base64(data: &str) -> String {
+    encode_base64(data.as_bytes())
+}
+
+pub fn decode_string_base64(data: &str) -> Result<String> {
+    let bytes = decode_base64(data)?;
+    String::from_utf8(bytes).map_err(|e| anyhow::anyhow!("Failed to decode base64 string: {}", e))
 }

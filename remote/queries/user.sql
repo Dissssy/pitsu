@@ -8,7 +8,8 @@
 
 --! create
 INSERT INTO Users (username)
-    VALUES (:username);
+    VALUES (:username)
+    RETURNING *;
 
 --! delete_by_uuid
 DELETE FROM Users

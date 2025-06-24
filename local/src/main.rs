@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 mod colors;
 mod config;
 use std::sync::Arc;

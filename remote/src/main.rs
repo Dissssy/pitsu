@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use actix_web::{
     delete, get, patch, post,
@@ -9,9 +13,13 @@ use clap::Parser as _;
 mod cornucopia;
 use deadpool_postgres::Pool;
 use pitsu_lib::{
-    anyhow::Result, AccessLevel, CreateRemoteRepository, FileUpload, RemoteRepository, RootFolder,
-    SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess,
+    anyhow::{self, Result},
+    decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload,
+    RemoteRepository, RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User,
+    UserWithAccess,
 };
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 #[get("/")]
 async fn root() -> impl Responder {
@@ -380,7 +388,7 @@ async fn repository_update(
     }
 }
 
-#[get("/api/access/{uuid}")]
+#[get("/{uuid}/.pit/access")]
 async fn get_users_with_access(
     req: actix_web::HttpRequest,
     uuid: actix_web::web::Path<uuid::Uuid>,
@@ -860,6 +868,127 @@ async fn create_repository(
     HttpResponse::Created().body("Repository created successfully")
 }
 
+#[get("/api/invite")]
+async fn invite_user(
+    req: actix_web::HttpRequest,
+    pool: Data<Pool>,
+    lock: Data<InviteLock>,
+    query: actix_web::web::Query<InviteQuery>,
+) -> impl Responder {
+    let path = {
+        // Acquire an invite lock to prevent concurrent invites (this builds the app with set env vars so we can't do multiple invites at once)
+        #[allow(unused_variables, unused_mut)]
+        let mut lock = lock.lock().await;
+        let pool = pool.into_inner();
+        let user_uuid = match query.extract() {
+            Ok(code) => code,
+            Err(err) => {
+                log::error!("Failed to extract invite code: {err}");
+                return HttpResponse::BadRequest().body("Invalid invite code format");
+            }
+        };
+        let mut connection = match pool.get().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                log::error!("Failed to get database connection: {err}");
+                return HttpResponse::InternalServerError().body("Database connection error");
+            }
+        };
+        let transaction = match connection.transaction().await {
+            Ok(tx) => tx,
+            Err(err) => {
+                log::error!("Failed to start transaction: {err}");
+                return HttpResponse::InternalServerError().body("Transaction error");
+            }
+        };
+        let user = match cornucopia::queries::user::get_by_uuid()
+            .bind(&transaction, &user_uuid)
+            .one()
+            .await
+        {
+            Ok(user) => user,
+            Err(err) => {
+                log::error!("Failed to fetch user: {err}");
+                return HttpResponse::InternalServerError().body("Failed to fetch user");
+            }
+        };
+        // eventually expand this to build for the users OS, but for now just windows
+        match build_executable(user.api_key, user.username).await {
+            Ok(path) => path,
+            Err(err) => {
+                log::error!("Failed to build executable: {err}");
+                return HttpResponse::InternalServerError().body("Failed to build executable");
+            }
+        }
+    };
+    // serve the executable file as a download
+    let file = match actix_files::NamedFile::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            log::error!("Failed to open executable file: {err}");
+            return HttpResponse::InternalServerError().body("Failed to open invite file");
+        }
+    };
+    file.into_response(&req)
+}
+
+struct InviteLock(Mutex<()>);
+
+impl Deref for InviteLock {
+    type Target = Mutex<()>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for InviteLock {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct InviteQuery {
+    code: String,
+}
+
+impl InviteQuery {
+    fn new(user_uuid: Uuid) -> Self {
+        let encrypted_code = xor_cypher(format!(
+            "{}|{}|{}",
+            env!("INVITE_CODE_PREFIX"),
+            user_uuid,
+            env!("INVITE_CODE_SUFFIX")
+        ));
+        Self {
+            code: encode_string_base64(&encrypted_code),
+        }
+    }
+    fn extract(&self) -> Result<Uuid> {
+        let decoded_code = decode_string_base64(&self.code)
+            .map_err(|_| anyhow::anyhow!("Failed to decode invite code"))?;
+        let decrypted_code = xor_cypher(decoded_code);
+        let parts: Vec<&str> = decrypted_code.split('|').collect();
+        if parts.len() != 3 {
+            return Err(anyhow::anyhow!("Invalid invite code format"));
+        }
+        if parts[0] != env!("INVITE_CODE_PREFIX") || parts[2] != env!("INVITE_CODE_SUFFIX") {
+            return Err(anyhow::anyhow!("Invalid invite code prefix or suffix"));
+        }
+        Uuid::parse_str(parts[1]).map_err(|_| anyhow::anyhow!("Invalid UUID in invite code"))
+    }
+}
+
+fn xor_cypher(input: String) -> String {
+    let key = env!("INVITE_CODE_ENCRYPTION_KEY");
+    input
+        .chars()
+        .zip(key.chars().cycle())
+        .map(|(c, k)| (c as u8 ^ k as u8) as char)
+        .collect()
+}
+
 async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
     std::env::set_var("SEQ_API_KEY", env!("REMOTE_SEQ_API_KEY"));
     if let Err(e) = datalust_logger::init("pitsu") {
@@ -871,8 +1000,10 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
         App::new()
             .app_data(json_cfg.clone())
             .app_data(Data::new(pool.clone()))
+            .app_data(Data::new(InviteLock(Mutex::new(()))))
             .service(root)
             .service(api)
+            .service(invite_user)
             .service(get_self)
             .service(get_other)
             .service(get_all_users)
@@ -919,6 +1050,7 @@ enum UserCommand {
     Add { name: String },
     List,
     Remove { uuid: String },
+    Invite { name: String },
 }
 
 #[derive(clap::Subcommand)]
@@ -954,22 +1086,32 @@ async fn main() -> std::io::Result<()> {
                 log::error!("Failed to start transaction: {err}");
                 std::process::exit(1);
             });
-            let res = crate::cornucopia::queries::user::create()
+            let user = match crate::cornucopia::queries::user::create()
                 .bind(&transaction, &name)
-                .await;
-            if let Err(err) = res {
-                log::error!("Failed to add user: {err}");
-                transaction.rollback().await.unwrap_or_else(|err| {
-                    log::error!("Failed to rollback transaction: {err}");
+                .one()
+                .await
+            {
+                Ok(user) => user,
+                Err(err) => {
+                    log::error!("Failed to create user: {err}");
+                    transaction.rollback().await.unwrap_or_else(|err| {
+                        log::error!("Failed to rollback transaction: {err}");
+                        std::process::exit(1);
+                    });
                     std::process::exit(1);
-                });
-                std::process::exit(1);
-            }
+                }
+            };
             transaction.commit().await.unwrap_or_else(|err| {
                 log::error!("Failed to commit transaction: {err}");
                 std::process::exit(1);
             });
             println!("User {name} added successfully");
+            let invite_code = InviteQuery::new(user.uuid);
+            let invite_code_str = invite_code.code;
+            println!(
+                "Invite for user {name}: {}/api/invite?code={invite_code_str}",
+                env!("PITSU_PUBLIC_URL")
+            );
         }
         Command::User {
             user_command: UserCommand::List,
@@ -1047,6 +1189,44 @@ async fn main() -> std::io::Result<()> {
                 });
                 std::process::exit(1);
             }
+        }
+        Command::User {
+            user_command: UserCommand::Invite { name },
+        } => {
+            println!("Inviting user: {name}");
+            let mut connection = pool.get().await.unwrap_or_else(|err| {
+                log::error!("Failed to get database connection: {err}");
+                std::process::exit(1);
+            });
+            let transaction = connection.transaction().await.unwrap_or_else(|err| {
+                log::error!("Failed to start transaction: {err}");
+                std::process::exit(1);
+            });
+            let user = match crate::cornucopia::queries::user::get_by_username()
+                .bind(&transaction, &name)
+                .one()
+                .await
+            {
+                Ok(user) => user,
+                Err(err) => {
+                    log::error!("Failed to fetch user by name: {err}");
+                    transaction.rollback().await.unwrap_or_else(|err| {
+                        log::error!("Failed to rollback transaction: {err}");
+                        std::process::exit(1);
+                    });
+                    std::process::exit(1);
+                }
+            };
+            let invite_code = InviteQuery::new(user.uuid);
+            let invite_code_str = invite_code.code;
+            transaction.commit().await.unwrap_or_else(|err| {
+                log::error!("Failed to commit transaction: {err}");
+                std::process::exit(1);
+            });
+            println!(
+                "Invite for user {name}: {}/api/invite?code={invite_code_str}",
+                env!("PITSU_PUBLIC_URL")
+            );
         }
         Command::Repo {
             repository_command: RepositoryCommand::List,
@@ -1228,4 +1408,40 @@ pub async fn check_user_access(
         }),
         Err(_) => Err(actix_web::error::ErrorForbidden("Access denied")),
     }
+}
+
+async fn build_executable(api_key: String, api_username: String) -> Result<PathBuf> {
+    tokio::spawn(async {
+        // Set the environment variables for the build
+        std::env::set_var("PITSU_API_KEY", api_key);
+        std::env::set_var("PITSU_API_USERNAME", api_username);
+        // Move to {crate_root}/local
+        let crate_root = format!(
+            "{}/../",
+            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string())
+        );
+        let local_path = format!("{crate_root}/local");
+        std::env::set_current_dir(local_path)
+            .map_err(|e| anyhow::anyhow!("Failed to change directory to local: {}", e))?;
+        // Run the build command
+        let output = tokio::process::Command::new("cargo")
+            .arg("build")
+            .arg("--release")
+            .arg("--target")
+            .arg("x86_64-pc-windows-gnu")
+            .output()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to run cargo build: {}", e))?;
+        if !output.status.success() {
+            return Err(anyhow::anyhow!(
+                "Cargo build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        // Return the path to the built executable
+        let executable_path =
+            format!("{crate_root}/target/x86_64-pc-windows-gnu/release/pitsu.exe");
+        Ok(PathBuf::from(executable_path))
+    })
+    .await?
 }
