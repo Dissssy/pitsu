@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-pub const MAX_UPLOAD_SIZE: usize = 1024 * 1024 * 1024; // 1 GB
+pub const MAX_UPLOAD_SIZE: usize = 1024 * 1024 * 1024;
 
 lazy_static::lazy_static!(
     static ref ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
@@ -431,42 +431,12 @@ impl UploadFile {
         Ok(decoded)
     }
     pub fn size(&self) -> usize {
-        // Rough estimate of the size of the serialized JSON representation
-        // This is not exact, but gives a good approximation for the size of the serialized data without actually serializing it
         let bytes = self.bytes.len();
         let decoded = self.decoded.as_ref().map_or(0, |d| d.len());
         let path = self.path.len();
         r#"{"path": "",bytes: ""}"#.len() + bytes + decoded + path
     }
 }
-
-// fn encode_base64<S>(data: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error>
-// where
-//     S: serde::Serializer,
-// {
-//     let mut compressed_data = Vec::new();
-//     let mut encoder = flate2::write::GzEncoder::new(&mut compressed_data, *COMPRESSION);
-//     encoder.write_all(data).map_err(serde::ser::Error::custom)?;
-//     encoder.finish().map_err(serde::ser::Error::custom)?;
-//     let encoded = ENGINE.encode(&compressed_data);
-//     serializer.serialize_str(&encoded)
-// }
-
-// fn decode_base64<'de, D>(deserializer: D) -> Result<Arc<[u8]>, D::Error>
-// where
-//     D: serde::Deserializer<'de>,
-// {
-//     let encoded: String = Deserialize::deserialize(deserializer)?;
-//     let decoded = ENGINE
-//         .decode(encoded.as_bytes())
-//         .map_err(serde::de::Error::custom)?;
-//     let mut decoder = flate2::read::GzDecoder::new(&decoded[..]);
-//     let mut decompressed_data = Vec::new();
-//     decoder
-//         .read_to_end(&mut decompressed_data)
-//         .map_err(serde::de::Error::custom)?;
-//     Ok(decompressed_data.into())
-// }
 
 fn compress(data: &[u8]) -> Result<Arc<[u8]>> {
     let mut compressed_data = Vec::new();

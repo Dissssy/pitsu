@@ -175,7 +175,7 @@ impl App {
 
     fn view_repository_details<'a>(
         &'a self,
-        repository: &'a Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>, // Fixed generics syntax here
+        repository: &'a Pending<(Arc<RemoteRepository>, Option<Arc<StoredRepository>>)>,
         repository_diff: &'a Pending<Arc<[Diff]>>,
         sync_status: &'a Pending<()>,
     ) -> Element<'a, Message> {
@@ -184,7 +184,7 @@ impl App {
             Pending::InProgress => Self::view_loading("Repository data is being fetched..."),
             Pending::Ready((repo, stored_repo)) => {
                 let repo = repo.as_ref();
-                // Add Back button at the top
+
                 let mut col = column![
                     row![
                         button(text("Back").size(20)).on_press(Message::ChangeState(
@@ -234,7 +234,6 @@ impl App {
         }
     }
 
-    // Helper to get login_data for back navigation
     fn get_login_data(&self) -> Arc<ThisUser> {
         match &self.state {
             StateMachine::RepositoryDetails { login_data, .. } => login_data.clone(),
@@ -723,12 +722,10 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
         let local_path = repository_path.join(full_path);
         match diff.change_type {
             pitsu_lib::ChangeType::Removed | pitsu_lib::ChangeType::Modified => {
-                // File is missing from server or is different, upload it
                 let file_data = std::fs::read(&local_path).map_err(|e| {
                     anyhow::anyhow!("Failed to read file {}: {}", local_path.display(), e)
                 })?;
-                // let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
-                // upload_file(&client, &file_data, &url).await?;
+
                 let file = UploadFile::new(diff.full_path.clone(), file_data)?;
                 let file_size = file.size();
                 if ((pending_upload_size + file_size) as f32)
@@ -750,7 +747,6 @@ async fn sync_diffs_up(client: Client, repository_uuid: Uuid, diffs: Arc<[Diff]>
                 }
             }
             pitsu_lib::ChangeType::Added => {
-                // File on server exists but is not in local repository, delete the remote file
                 let url = format!("{}/{}/{}", CONFIG.public_url(), repository_uuid, full_path);
                 delete_file(&client, &url).await?;
             }
@@ -769,7 +765,6 @@ fn panic_hook(info: &std::panic::PanicHookInfo) {
         .show();
 }
 
-// curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
 async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -785,11 +780,6 @@ async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Re
     let response = client
         .post(format!("{}/{}/.pit/upload", CONFIG.public_url(), uuid))
         .header("Authorization", format!("Bearer {}", CONFIG.api_key()))
-        // .multipart(
-        //     reqwest::multipart::Form::new()
-        //         // .part("file", reqwest::multipart::Part::bytes(file_bytes.to_vec())),
-        //         .file("file", file_path),
-        // )
         .json(&FileUpload { files })
         .send()
         .await?;
@@ -811,7 +801,6 @@ async fn upload_files(client: &Client, files: Vec<UploadFile>, uuid: Uuid) -> Re
     }
 }
 
-// curl -X DELETE -H "Authorization Bearer <token>" https://pit.p51.nl/{uuid}/{path}
 async fn delete_file(client: &Client, url: &str) -> Result<()> {
     let response = client
         .delete(url)
@@ -838,7 +827,6 @@ async fn create_repository(client: Client, name: Arc<str>) -> Result<Arc<ThisUse
         .await?;
 
     if response.status().is_success() {
-        // get updated user data
         let user = fetch_user(client).await?;
         Ok(Arc::new(user))
     } else {

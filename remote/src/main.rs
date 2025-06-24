@@ -13,7 +13,6 @@ use pitsu_lib::{
     SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess,
 };
 
-// curl -X GET https://pit.p51.nl/
 #[get("/")]
 async fn root() -> impl Responder {
     HttpResponse::Ok().body(format!(
@@ -22,7 +21,6 @@ async fn root() -> impl Responder {
     ))
 }
 
-// curl -X GET https://pit.p51.nl/api
 #[get("/api")]
 async fn api() -> impl Responder {
     HttpResponse::Ok().body(format!(
@@ -31,7 +29,6 @@ async fn api() -> impl Responder {
     ))
 }
 
-// curl -X GET https://pit.p51.nl/api/{path}
 #[get("/api/{path:.*}")]
 async fn api_catch_all(path: actix_web::web::Path<String>) -> impl Responder {
     let path = path.into_inner();
@@ -41,7 +38,6 @@ async fn api_catch_all(path: actix_web::web::Path<String>) -> impl Responder {
     ))
 }
 
-// curl -X GET -H "Authorization Bearer <token>" https://pit.p51.nl/api/user
 #[get("/api/user")]
 async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Responder {
     let pool = pool.into_inner();
@@ -156,7 +152,6 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
     })
 }
 
-// curl -X GET -H "Authorization Bearer <token>" https://pit.p51.nl/api/user/{uuid}
 #[get("/api/user/{uuid}")]
 async fn get_other(
     req: actix_web::HttpRequest,
@@ -186,7 +181,7 @@ async fn get_other(
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch user information from the database
+
     match cornucopia::queries::user::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
@@ -203,7 +198,6 @@ async fn get_other(
     }
 }
 
-// curl -X GET -H "Authorization Bearer <token>" https://pit.p51.nl/api/user/
 #[get("/api/user/")]
 async fn get_all_users(pool: Data<Pool>) -> impl Responder {
     let pool = pool.into_inner();
@@ -221,7 +215,7 @@ async fn get_all_users(pool: Data<Pool>) -> impl Responder {
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch all users from the database
+
     match cornucopia::queries::user::get_all()
         .bind(&transaction)
         .all()
@@ -244,7 +238,6 @@ async fn get_all_users(pool: Data<Pool>) -> impl Responder {
     }
 }
 
-// curl -X GET -H "Authorization Bearer <token>" https://pit.p51.nl/api/user/{uuid}
 #[get("/{uuid}")]
 async fn repository(
     req: actix_web::HttpRequest,
@@ -261,7 +254,6 @@ async fn repository(
     };
     let uuid = uuid.into_inner();
 
-    // Check if the user has access to the repository
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -293,7 +285,7 @@ async fn repository(
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch repository information from the database
+
     cornucopia::queries::repository::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
@@ -319,7 +311,6 @@ async fn repository(
         })
 }
 
-// curl -X PATCH -H "Content-Type: application/json" -d '{"name": "New Repository"}' -H "Authorization: Bearer <token>" https://pit.p51.nl/{uuid}
 #[patch("/{uuid}")]
 async fn repository_update(
     req: actix_web::HttpRequest,
@@ -337,7 +328,6 @@ async fn repository_update(
     };
     let uuid = uuid.into_inner();
 
-    // Check if the user has access to the repository
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -370,7 +360,6 @@ async fn repository_update(
         }
     };
 
-    // Update the repository metadata in the database
     match cornucopia::queries::repository::update_metadata_by_uuid()
         .bind(&transaction, &&*body.name, &uuid)
         .one()
@@ -385,13 +374,12 @@ async fn repository_update(
         }
         Err(err) => {
             log::error!("Failed to update repository: {err}");
-            transaction.rollback().await.ok(); // Ignore rollback errors
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().body("Failed to update repository")
         }
     }
 }
 
-// curl -X GET -H "Authorization Bearer <token>" https://pit.p51.nl/api/access/{uuid}
 #[get("/api/access/{uuid}")]
 async fn get_users_with_access(
     req: actix_web::HttpRequest,
@@ -408,7 +396,6 @@ async fn get_users_with_access(
     };
     let uuid = uuid.into_inner();
 
-    // Check if the user has admin access to the repository
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -441,7 +428,6 @@ async fn get_users_with_access(
         }
     };
 
-    // Fetch users with access to the repository
     match cornucopia::queries::access::get_all_users_with_access()
         .bind(&transaction, &uuid)
         .all()
@@ -475,7 +461,6 @@ async fn get_users_with_access(
     }
 }
 
-// curl -X GET -H "Authorization: Bearer <token>" https://pit.p51.nl/api/repository/{uuid}/{path}
 #[get("{uuid}/{path:.*}")]
 async fn repository_path(
     req: actix_web::HttpRequest,
@@ -492,7 +477,6 @@ async fn repository_path(
     };
     let (uuid, path) = path_stuff.into_inner();
 
-    // Check if the user has access to the repository
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -524,7 +508,7 @@ async fn repository_path(
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch repository information from the database
+
     let repo = match cornucopia::queries::repository::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
@@ -543,10 +527,9 @@ async fn repository_path(
         path
     );
     log::debug!("Full path to file: {full_path}");
-    // Check if the path exists
+
     if std::path::Path::new(&full_path).exists() {
         if std::path::Path::new(&full_path).is_dir() {
-            // If it's a directory, return an index of the files within and all subfiles
             log::debug!("Path is a directory, returning index");
             let root_folder: RootFolder = match serde_json::from_value(repo.file_hashes) {
                 Ok(folder) => folder,
@@ -557,7 +540,6 @@ async fn repository_path(
             };
             match root_folder.index_through(&path) {
                 Ok(index) => {
-                    // Return the index as a JSON response
                     return HttpResponse::Ok().json(index);
                 }
                 Err(err) => {
@@ -566,7 +548,7 @@ async fn repository_path(
                 }
             };
         }
-        // If it exists, return the file
+
         match actix_files::NamedFile::open(full_path) {
             Ok(file) => file.into_response(&req),
             Err(err) => {
@@ -575,12 +557,10 @@ async fn repository_path(
             }
         }
     } else {
-        // If it doesn't exist, return a 404
         HttpResponse::NotFound().body("File not found")
     }
 }
 
-// curl -X POST -H "Authorization Bearer <token>" -F "file=@/path/to/file" https://pit.p51.nl/{uuid}/{path}
 #[post("{uuid}/.pit/upload")]
 async fn upload_file(
     req: actix_web::HttpRequest,
@@ -588,14 +568,6 @@ async fn upload_file(
     pool: Data<Pool>,
     mut body: Json<FileUpload>,
 ) -> impl Responder {
-    // BEHAVIOUR:
-    // 1. Check if the user has write access to the repository
-    // 2. Ensure all directories in the path exist
-    // 3. Write the file to the specified path
-    // - If the file exists, overwrite it
-    // - If the user does not have write access, return 403 Forbidden
-    // - If the repository does not exist, return 404 Not Found
-    // - If the path is invalid (e.g., trying to write outside the repository), return 400 Bad Request
     let pool = pool.into_inner();
     let user = match get_user(&req, pool.clone()).await {
         Ok(user) => user,
@@ -604,8 +576,7 @@ async fn upload_file(
             return HttpResponse::Unauthorized().body("Unauthorized");
         }
     };
-    // let (uuid, path) = path_stuff.into_inner();
-    // Check if the user has access to the repository
+
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -635,7 +606,7 @@ async fn upload_file(
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch repository information from the database
+
     let repo = match cornucopia::queries::repository::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
@@ -653,14 +624,14 @@ async fn upload_file(
     for file in &mut body.files {
         let full_path = format!("{repo_path}/{}", file.path);
         log::debug!("Full path to file: {full_path}");
-        // Ensure the directory exists
+
         if let Some(parent) = std::path::Path::new(&full_path).parent() {
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
                 log::error!("Failed to create directory: {err}");
                 return HttpResponse::InternalServerError().body("Failed to create directory");
             }
         }
-        // retrieve file bytes
+
         let bytes = match file.get_bytes() {
             Ok(bytes) => bytes,
             Err(err) => {
@@ -668,21 +639,21 @@ async fn upload_file(
                 return HttpResponse::BadRequest().body("Invalid file data");
             }
         };
-        // Write the file to the specified path
+
         if let Err(err) = tokio::fs::write(&full_path, &bytes).await {
             log::error!("Failed to write file: {err}");
             return HttpResponse::InternalServerError().body("Failed to write file");
         }
         cleanup_paths.push(full_path.clone());
     }
-    // Update the repository file hashes
+
     let root_folder = match RootFolder::ingest_folder(&repo_path.into()) {
         Ok(folder) => folder,
         Err(err) => {
             log::error!("Failed to ingest folder: {err}");
-            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+
             for path in cleanup_paths {
-                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+                let _ = tokio::fs::remove_file(&path).await;
             }
             return HttpResponse::InternalServerError().body("Failed to ingest folder");
         }
@@ -691,9 +662,9 @@ async fn upload_file(
         Ok(value) => value,
         Err(err) => {
             log::error!("Failed to serialize file hashes: {err}");
-            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+
             for path in cleanup_paths {
-                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+                let _ = tokio::fs::remove_file(&path).await;
             }
             return HttpResponse::InternalServerError().body("Failed to serialize file hashes");
         }
@@ -706,9 +677,9 @@ async fn upload_file(
         Ok(_) => {
             if let Err(err) = transaction.commit().await {
                 log::error!("Failed to commit transaction: {err}");
-                // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+
                 for path in cleanup_paths {
-                    let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+                    let _ = tokio::fs::remove_file(&path).await;
                 }
                 return HttpResponse::InternalServerError().body("Failed to commit changes");
             }
@@ -716,35 +687,22 @@ async fn upload_file(
         }
         Err(err) => {
             log::error!("Failed to update file hashes: {err}");
-            // tokio::fs::remove_file(&full_path).await.ok(); // Clean up the file if ingestion fails
+
             for path in cleanup_paths {
-                let _ = tokio::fs::remove_file(&path).await; // Clean up all files written
+                let _ = tokio::fs::remove_file(&path).await;
             }
-            transaction.rollback().await.ok(); // Ignore rollback errors
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().body("Failed to update file hashes")
         }
     }
 }
 
-// #[derive(Debug, MultipartForm)]
-// struct FileUpload {
-//     #[multipart(limit = "100MB")]
-//     file: Bytes,
-// }
-
-// curl -X DELETE -H "Authorization Bearer <token>" https://pit.p51.nl/{uuid}/{path}
 #[delete("/{uuid}/{path:.*}")]
 async fn delete_file(
     req: actix_web::HttpRequest,
     path_stuff: actix_web::web::Path<(uuid::Uuid, String)>,
     pool: Data<Pool>,
 ) -> impl Responder {
-    // BEHAVIOUR:
-    // 1. Check if the user has write access to the repository
-    // 2. Delete the file or directory (and all its contents) at the specified path
-    // - If the file does not exist, return 404 Not Found
-    // - If the user does not have write access, return 403 Forbidden
-    // - If the repository does not exist, return 404 Not Found
     let pool = pool.into_inner();
     let user = match get_user(&req, pool.clone()).await {
         Ok(user) => user,
@@ -754,7 +712,7 @@ async fn delete_file(
         }
     };
     let (uuid, path) = path_stuff.into_inner();
-    // Check if the user has access to the repository
+
     let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
         Ok(level) => level,
         Err(err) => {
@@ -784,7 +742,7 @@ async fn delete_file(
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    // Fetch repository information from the database
+
     let repo = match cornucopia::queries::repository::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
@@ -799,7 +757,7 @@ async fn delete_file(
     let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
     let full_path = format!("{}/{}/{}", root_path, repo.uuid, path);
     log::debug!("Full path to file: {full_path}");
-    // Check if the path exists
+
     let metadata = match tokio::fs::metadata(&full_path).await {
         Ok(meta) => meta,
         Err(err) => {
@@ -808,7 +766,6 @@ async fn delete_file(
         }
     };
 
-    // Delete the file or directory
     if metadata.is_dir() {
         if let Err(err) = tokio::fs::remove_dir_all(&full_path).await {
             log::error!("Failed to delete file or directory: {err}");
@@ -823,7 +780,7 @@ async fn delete_file(
         log::debug!("Path is neither a file nor a directory");
         return HttpResponse::NotFound().body("File or directory not found");
     }
-    // Update the repository file hashes
+
     let root_folder =
         match RootFolder::ingest_folder(&format!("{}/{}", root_path, repo.uuid).into()) {
             Ok(folder) => folder,
@@ -853,13 +810,12 @@ async fn delete_file(
         }
         Err(err) => {
             log::error!("Failed to update file hashes: {err}");
-            transaction.rollback().await.ok(); // Ignore rollback errors
+            transaction.rollback().await.ok();
             HttpResponse::InternalServerError().body("Failed to update file hashes")
         }
     }
 }
 
-// curl -X POST -H "Content-Type: application/json" -d '{"name": "New Repository"}' -H "Authorization Bearer <token>" https://pit.p51.nl/api/repository
 #[post("/api/repository")]
 async fn create_repository(
     req: actix_web::HttpRequest,
@@ -916,14 +872,12 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .app_data(json_cfg.clone())
             .app_data(Data::new(pool.clone()))
             .service(root)
-            // Api Routes
             .service(api)
             .service(get_self)
             .service(get_other)
             .service(get_all_users)
             .service(get_users_with_access)
             .service(create_repository)
-            // Wildcard routes (must be last to avoid conflicts)
             .service(api_catch_all)
             .service(repository)
             .service(upload_file)
@@ -937,11 +891,6 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
     Ok(())
 }
 
-// Cli:
-// remote run --port 8080 --host 0.0.0.0
-// remote user add --name alice
-// remote user list
-// remote user remove --name alice
 #[derive(clap::Parser)]
 #[clap(name = "remote", version = env!("CARGO_PKG_VERSION"), author = "Ethan Conaway <you@willsh.art>", about = "Planet51 Internet Transfer and Synchronization Utility")]
 struct Cli {
@@ -1057,18 +1006,16 @@ async fn main() -> std::io::Result<()> {
                 log::error!("Failed to start transaction: {err}");
                 std::process::exit(1);
             });
-            // Check if a uuid is being provided instead of a username
+
             if let Ok(uuid) = uuid::Uuid::parse_str(&uuid) {
-                // If it's a UUID, we need to delete by UUID
                 let res = crate::cornucopia::queries::user::delete_by_uuid()
                     .bind(&transaction, &uuid)
                     .all()
                     .await;
                 match res {
                     Ok(entries) if !entries.is_empty() => {
-                        // Successfully removed user
                         println!("User with UUID {uuid} removed successfully");
-                        // Commit the transaction
+
                         transaction.commit().await.unwrap_or_else(|err| {
                             log::error!("Failed to commit transaction: {err}");
                             std::process::exit(1);
@@ -1076,7 +1023,6 @@ async fn main() -> std::io::Result<()> {
                         return Ok(());
                     }
                     Ok(_) => {
-                        // No user found with that UUID
                         log::error!("No user found with UUID: {uuid}");
                         transaction.rollback().await.unwrap_or_else(|err| {
                             log::error!("Failed to rollback transaction: {err}");
@@ -1085,7 +1031,6 @@ async fn main() -> std::io::Result<()> {
                         std::process::exit(1);
                     }
                     Err(err) => {
-                        // Error removing user
                         log::error!("Failed to remove user by UUID: {err}");
                         transaction.rollback().await.unwrap_or_else(|err| {
                             log::error!("Failed to rollback transaction: {err}");
@@ -1095,7 +1040,6 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
             } else {
-                // Error
                 log::error!("Invalid UUID format: {uuid}");
                 transaction.rollback().await.unwrap_or_else(|err| {
                     log::error!("Failed to rollback transaction: {err}");
@@ -1135,7 +1079,7 @@ async fn main() -> std::io::Result<()> {
                 log::error!("Failed to get database connection: {err}");
                 std::process::exit(1);
             });
-            // Fetch all repositories
+
             let repos = crate::cornucopia::queries::repository::get_all()
                 .bind(&connection)
                 .all()
@@ -1155,16 +1099,16 @@ async fn main() -> std::io::Result<()> {
                     std::process::exit(1);
                 });
                 println!("Syncing repository {}/{total}: {}", i + 1, repo.name);
-                // get path for root of repository
+
                 let root_path =
                     std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
                 let full_path = format!("{}/{}", root_path, repo.uuid);
-                // Check if the path exists
+
                 if !std::path::Path::new(&full_path).exists() {
                     log::warn!("Repository path does not exist: {full_path}");
                     continue;
                 }
-                // Ingest the folder structure
+
                 let root_folder = match pitsu_lib::RootFolder::ingest_folder(&full_path.into()) {
                     Ok(folder) => folder,
                     Err(err) => {
@@ -1175,7 +1119,7 @@ async fn main() -> std::io::Result<()> {
                         continue;
                     }
                 };
-                // Store the file_hashes in the database
+
                 let file_hashes = match serde_json::to_value(&root_folder) {
                     Ok(value) => value,
                     Err(err) => {
@@ -1194,7 +1138,7 @@ async fn main() -> std::io::Result<()> {
                 match res {
                     Ok(_) => {
                         println!("Successfully synced repository: {}", repo.name);
-                        // Commit the transaction
+
                         if let Err(err) = transaction.commit().await {
                             log::error!("Failed to commit transaction: {err}");
                         }
@@ -1204,7 +1148,7 @@ async fn main() -> std::io::Result<()> {
                             "Failed to update file hashes for repository {}: {err}",
                             repo.name
                         );
-                        // Rollback the transaction
+
                         if let Err(rollback_err) = transaction.rollback().await {
                             log::error!("Failed to rollback transaction: {rollback_err}");
                         }
@@ -1233,7 +1177,6 @@ pub async fn get_user(
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                // Validate the token against the database
                 let mut connection = pool.get().await.map_err(|_| {
                     actix_web::error::ErrorInternalServerError("Database connection error")
                 })?;
@@ -1267,7 +1210,6 @@ pub async fn check_user_access(
     user_uuid: &uuid::Uuid,
     repo_uuid: &uuid::Uuid,
 ) -> Result<AccessLevel, actix_web::Error> {
-    // Check if the user has access via ownership, or the
     let mut connection = pool
         .get()
         .await
