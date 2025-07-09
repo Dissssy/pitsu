@@ -18,6 +18,7 @@ use crate::pitignore::Pitignore;
 pub fn setup() {
     std::panic::set_hook(Box::new(crate::dialogue::rfd_panic_dialogue));
     std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
+    std::env::set_var("SEQ_API_URL", env!("SEQ_API_URL"));
     datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid()))
         .expect("Failed to initialize logger");
     if CONFIG.api_key().is_empty() {
@@ -31,6 +32,7 @@ pub fn setup() {
 }
 
 pub static PUBLIC_URL: &str = env!("PITSU_PUBLIC_URL");
+pub const MAX_PATH_LENGTH: usize = 32;
 
 lazy_static! {
     static ref CONFIG_DIR: PathBuf = {
@@ -136,7 +138,7 @@ impl Config {
     pub fn public_url(&self) -> &'static str {
         PUBLIC_URL
     }
-    pub fn get_stored(&self, uuid: Uuid) -> Result<Option<Arc<StoredRepository>>> {
+    pub fn get_stored(&self, uuid: Uuid) -> Result<Option<Arc<LocalRepository>>> {
         let path = {
             let config = self
                 .config
@@ -155,28 +157,27 @@ impl Config {
             ));
         }
         let root_folder = RootFolder::ingest_folder(&path)?;
-        let mut config = self
-            .config
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock config: {}", e))?;
-        if let Some(repo) = config.stored_repositories.get_mut(&uuid) {
-            let mut new = Arc::new(StoredRepository {
-                uuid,
-                path: repo.path.clone(),
-                folder: Some(root_folder.clone()),
-                overrides: Pitignore::blank(),
-            });
-            std::mem::swap(&mut new, repo);
-            Ok(Some(repo.clone()))
-        } else {
-            log::warn!("Stored repository with UUID {uuid} not found in config");
-            Ok(None)
-        }
+        let overrides = {
+            let config = self
+                .config
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Failed to lock config: {}", e))?;
+            match config.stored_repositories.get(&uuid) {
+                Some(repo) => repo.overrides.clone(),
+                None => Pitignore::blank(),
+            }
+        };
+        let local_repo = LocalRepository {
+            uuid,
+            path,
+            folder: root_folder,
+            overrides,
+        };
+        Ok(Some(Arc::new(local_repo)))
     }
-    pub fn add_stored(&self, uuid: Uuid, path: PathBuf) -> Result<Arc<StoredRepository>> {
+    pub fn add_stored(&self, uuid: Uuid, path: PathBuf) -> Result<()> {
         let stored_repo = Arc::new(StoredRepository {
             uuid,
-            folder: Some(RootFolder::ingest_folder(&path)?),
             path,
             overrides: Pitignore::blank(),
         });
@@ -188,7 +189,8 @@ impl Config {
             config.stored_repositories.insert(uuid, stored_repo.clone());
         }
         self.save()?;
-        Ok(stored_repo)
+        log::info!("Stored repository added: {}", stored_repo.path.display());
+        Ok(())
     }
 }
 
@@ -221,13 +223,19 @@ fn get_api_key_from_user() -> Arc<str> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredRepository {
+struct StoredRepository {
     uuid: Uuid,
-    pub path: PathBuf,
+    path: PathBuf,
     #[serde(flatten)]
+    overrides: Pitignore,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalRepository {
+    pub uuid: Uuid,
+    pub path: PathBuf,
     pub overrides: Pitignore,
-    #[serde(skip)]
-    pub folder: Option<RootFolder>,
+    pub folder: RootFolder,
 }
 
 #[derive(Debug, Clone)]

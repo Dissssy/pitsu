@@ -103,7 +103,7 @@ impl RootFolder {
     }
 
     pub fn ingest_folder(root: &PathBuf) -> Result<Self> {
-        let children: Vec<File> = std::fs::read_dir(root)?
+        let mut children: Vec<File> = std::fs::read_dir(root)?
             .par_bridge()
             .filter_map(|entry| match entry {
                 Ok(entry) => {
@@ -126,7 +126,7 @@ impl RootFolder {
                             format!("{:x}", hasher.finalize()).into()
                         });
                         if let Some(hash) = hash {
-                            println!("{hash} - {name}");
+                            // println!("{hash} - {name}");
                             Some(File::File {
                                 name: name.into(),
                                 hash,
@@ -140,6 +140,7 @@ impl RootFolder {
                 Err(_) => None,
             })
             .collect();
+        children.sort_by_key(|a| a.name());
         Ok(RootFolder {
             size: children.iter().map(|f| f.size()).sum(),
             children,

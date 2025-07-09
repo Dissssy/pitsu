@@ -5,18 +5,13 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use eframe::{
-    egui::{self, mutex::Mutex, FontData, Response},
-    epaint,
-};
-use ehttp::Request;
-use pitsu_lib::{AccessLevel, Diff, RemoteRepository, RootFolder, ThisUser};
-use serde::de::DeserializeOwned;
+use eframe::egui::{self, FontData};
+use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository, ThisUser};
 use uuid::Uuid;
 
 use crate::{
-    config::{get_request, Pending, PUBLIC_URL},
-    dialogue::{rfd_confirm_response, rfd_ok_dialogue},
+    config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL},
+    pitignore::Pitignore,
 };
 mod config;
 mod dialogue;
@@ -67,11 +62,12 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-struct Repository {
-    local: RootFolder,
-    remote: RemoteRepository,
-    diff: Vec<Diff>,
-    pitignore: pitignore::Pitignore,
+#[derive(Debug, Clone)]
+pub struct Repository {
+    local: Arc<LocalRepository>,
+    remote: Arc<RemoteRepository>,
+    diff: Arc<[Diff]>,
+    pitignore: Arc<pitignore::Pitignore>,
 }
 
 pub struct App {
@@ -80,44 +76,20 @@ pub struct App {
     state: AppState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Main,
-    RepositoryDetails { repository: Arc<RemoteRepository> },
+    RepositoryDetails { uuid: Uuid },
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let mut new_state = self.header(
-                ui,
-                ctx,
-                frame,
-                match self.state {
-                    AppState::Main => None,
-                    AppState::RepositoryDetails { .. } => Some(AppState::Main),
-                },
-                match &self.state {
-                    AppState::Main => Box::from(
-                        |ui: &mut egui::Ui, ctx: &egui::Context, frame: &mut eframe::Frame| {
-                            ui.label("Repositories");
-                        },
-                    ),
-                    AppState::RepositoryDetails { repository } => {
-                        let repository = Arc::clone(repository);
-                        Box::from(
-                            move |ui: &mut egui::Ui,
-                                  ctx: &egui::Context,
-                                  frame: &mut eframe::Frame| {
-                                ui.label(format!("{}", repository.name));
-                            },
-                        )
-                    }
-                },
-            );
-            match &self.state {
+            let mut new_state = self.header(ui, ctx, frame);
+            match self.state {
                 AppState::Main => {
                     if let Ok(Some(this)) = self.cache.this_user() {
-                        let mut table = egui_extras::TableBuilder::new(ui)
+                        let table = egui_extras::TableBuilder::new(ui)
                             .striped(true)
                             .resizable(false)
                             .column(egui_extras::Column::auto())
@@ -143,42 +115,53 @@ impl eframe::App for App {
                                 .map(|r| (r, AccessLevel::Admin))
                                 .chain(this.accessible_repositories.iter().map(|(r, al)| (r, *al)))
                             {
-                                match self.cache.get_repository(repo.uuid) {
-                                    Ok(Some(repository)) => {
-                                        body.row(20.0, |mut row| {
-                                            row.col(|ui| {
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(&*repository.name)
-                                                            .wrap_mode(egui::TextWrapMode::Extend),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    new_state = Some(AppState::RepositoryDetails {
-                                                        repository: Arc::clone(&repository),
-                                                    });
-                                                };
+                                body.row(20.0, |mut row| {
+                                    row.col(|ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(&*repo.name)
+                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        {
+                                            new_state = Some(AppState::RepositoryDetails {
+                                                uuid: repo.uuid,
                                             });
-                                            row.col(|ui| {
-                                                ui.add(
-                                                    egui::Label::new(access_level.to_string())
-                                                        .wrap_mode(egui::TextWrapMode::Extend),
-                                                );
-                                            });
-                                        });
-                                    }
-                                    Ok(None) => {}
-                                    Err(e) => {}
-                                }
+                                        };
+                                    });
+                                    row.col(|ui| {
+                                        ui.add(
+                                            egui::Label::new(access_level.to_string())
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                        );
+                                    });
+                                });
                             }
                         });
-                    } else {
-                        ui.label("Loading user data...");
                     }
                 }
-                AppState::RepositoryDetails { repository } => {
-                    ui.label(format!("Repository: {}", repository.name));
-                    ui.label(format!("UUID: {}", repository.uuid));
+                AppState::RepositoryDetails { uuid } => {
+                    if let Ok(Some(repo)) = self.cache.get_repository(uuid) {
+                        match self.cache.get_stored_repository(uuid, &repo) {
+                            Ok(Some(Some(stored_repo))) => {
+                                self.show_stored_repository_details(ui, &stored_repo);
+                            }
+                            Ok(Some(None)) => {
+                                ui.label("This repository is not stored locally.");
+                                if ui.button("Download Repository").clicked() {
+                                    self.change_repository_path(uuid);
+                                }
+                            }
+                            Ok(None) => {
+                                ui.spinner();
+                            }
+                            Err(e) => {
+                                ui.label(format!("Error fetching stored repository: {e}"));
+                            }
+                        }
+                    } else {
+                        ui.spinner();
+                    }
                 }
             }
             if let Some(new_state) = new_state {
@@ -194,7 +177,7 @@ impl eframe::App for App {
 impl App {
     fn new(ppp: f32) -> Self {
         App {
-            cache: RequestCache::default(),
+            cache: RequestCache::new(),
             ppp,
             state: AppState::Main,
         }
@@ -203,18 +186,19 @@ impl App {
         &mut self,
         ui: &mut egui::Ui,
         ctx: &egui::Context,
-        frame: &mut eframe::Frame,
-        go_back: Option<AppState>,
-        label: Box<dyn FnOnce(&mut egui::Ui, &egui::Context, &mut eframe::Frame)>,
+        _frame: &mut eframe::Frame,
     ) -> Option<AppState> {
+        let go_back = match self.state {
+            AppState::Main => None,
+            AppState::RepositoryDetails { .. } => Some(AppState::Main),
+        };
         let username = match self.cache.this_user() {
             Ok(Some(this)) => Arc::clone(&this.user.username),
             Ok(None) => {
-                ui.label("Loading user data...");
                 return None;
             }
             Err(e) => {
-                ui.label(format!("Error loading user data: {}", e));
+                ui.label(format!("Error loading user data: {e}"));
                 return None;
             }
         };
@@ -229,7 +213,31 @@ impl App {
             {
                 new_state = go_back;
             }
-            label(ui, ctx, frame);
+            match self.state {
+                AppState::Main => {
+                    ui.label("Repositories");
+                }
+                AppState::RepositoryDetails { uuid } => {
+                    if let Some(repo) = self.cache.get_repository(uuid).unwrap_or(None) {
+                        ui.label(format!("{}", repo.name));
+                        if self
+                            .cache
+                            .get_stored_repository(uuid, &repo)
+                            .ok()
+                            .flatten()
+                            .flatten()
+                            .is_some()
+                        {
+                            // Show refresh button
+                            if ui.button(nerdfonts::REFRESH).clicked() {
+                                self.cache.reload_repository(uuid);
+                            }
+                        }
+                    } else {
+                        ui.spinner();
+                    }
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 ui.menu_button(&*username, |ui| {
                     ui.label(format!("UI Scale: {:.2}x", self.ppp));
@@ -247,31 +255,129 @@ impl App {
         ui.separator();
         new_state
     }
+
+    fn show_stored_repository_details(&mut self, ui: &mut egui::Ui, stored_repo: &Repository) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                self.repository_info(ui, stored_repo);
+                if !stored_repo.pitignore.is_empty() {
+                    ui.separator();
+                    self.repository_pitignore(ui, stored_repo);
+                }
+            });
+            if !stored_repo.diff.is_empty() {
+                ui.separator();
+                ui.vertical(|ui| {
+                    self.repository_diff(ui, stored_repo);
+                });
+            }
+        });
+    }
+    fn repository_info(&mut self, ui: &mut egui::Ui, stored_repo: &Repository) {
+        let display_path = stored_repo.local.path.display().to_string();
+        ui.menu_button(
+            if display_path.len() > MAX_PATH_LENGTH {
+                format!(
+                    "Path: ...{}",
+                    &display_path[display_path.len() - MAX_PATH_LENGTH + 3..]
+                )
+            } else {
+                format!("Path: {display_path}")
+            },
+            |ui| {
+                // ui.label(format!("Full Path: {display_path}"));
+                ui.add(
+                    egui::Label::new(format!("Full Path: {}", stored_repo.local.path.display()))
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                )
+                .on_hover_text("This is the full path to the repository on your local machine.");
+                if ui
+                    .button("Open in File Explorer")
+                    .on_hover_text("Open the repository folder in your file explorer.")
+                    .clicked()
+                {
+                    open::that(&stored_repo.local.path).unwrap_or_else(|e| {
+                        log::error!("Failed to open repository path: {e}");
+                    });
+                    ui.close_menu();
+                };
+                if ui
+                    .button("Change path")
+                    .on_hover_text("Change the path to the repository on your local machine.")
+                    .clicked()
+                {
+                    self.change_repository_path(stored_repo.local.uuid);
+                    ui.close_menu();
+                }
+            },
+        );
+    }
+    fn repository_pitignore(&self, ui: &mut egui::Ui, stored_repo: &Repository) {
+        ui.label("Pitignore Patterns:");
+        for pattern in &stored_repo.pitignore.patterns {
+            let label = if pattern.negated {
+                format!("!{}", pattern.pattern)
+            } else {
+                pattern.pattern.to_string()
+            };
+            ui.label(label);
+        }
+    }
+    fn repository_diff(&self, ui: &mut egui::Ui, stored_repo: &Repository) {
+        ui.label("Differences:");
+        for diff in stored_repo.diff.iter() {
+            let label = match diff.change_type {
+                ChangeType::Added => format!("Added: {}", diff.full_path),
+                ChangeType::Removed => format!("Removed: {}", diff.full_path),
+                ChangeType::Modified => format!("Modified: {}", diff.full_path),
+            };
+            ui.label(label);
+        }
+    }
+
+    fn change_repository_path(&mut self, uuid: Uuid) {
+        let path = rfd::FileDialog::new()
+            .set_title("Select Repository Storage Location")
+            .pick_folder();
+        if let Some(path) = path {
+            if let Err(e) = CONFIG.add_stored(uuid, path) {
+                dialogue::rfd_ok_dialogue(&format!("Failed to store repository:\n{e}")).ok();
+            }
+            self.cache.reload_repository(uuid);
+        }
+    }
 }
 
-#[derive(Default)]
 pub struct RequestCache {
-    this_user: PendingRequest<ThisUser>,
-    repositories: HashMap<Uuid, PendingRequest<RemoteRepository>>,
+    this_user: Option<PendingRequest<Arc<ThisUser>>>,
+    repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
+    stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 enum PendingRequest<T>
 where
     T: std::fmt::Debug + Send + Sync + 'static,
 {
-    #[default]
-    Unsent,
-    Pending(mpsc::Receiver<Result<Arc<T>, Arc<str>>>),
-    Response(Result<Arc<T>, Arc<str>>),
+    // #[default]
+    // Unsent,
+    Pending(mpsc::Receiver<Result<T, Arc<str>>>),
+    Response(Result<T, Arc<str>>),
 }
 
-type PendingResponse<T> = Result<Option<Arc<T>>, Arc<str>>;
+type PendingResponse<T> = Result<Option<T>, Arc<str>>;
 
 impl RequestCache {
-    pub fn this_user(&mut self) -> PendingResponse<ThisUser> {
+    pub fn new() -> Self {
+        RequestCache {
+            this_user: None,
+            repositories: HashMap::new(),
+            stored_repositories: HashMap::new(),
+        }
+    }
+    pub fn this_user(&mut self) -> PendingResponse<Arc<ThisUser>> {
         let new_state = match &self.this_user {
-            PendingRequest::Unsent => {
+            None => {
                 let (sender, receiver) = mpsc::channel();
                 ehttp::fetch(
                     get_request(&format!("{PUBLIC_URL}/api/user")),
@@ -317,7 +423,7 @@ impl RequestCache {
                 );
                 PendingRequest::Pending(receiver)
             }
-            PendingRequest::Pending(ref pending) => match pending.try_recv() {
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => {
                     return Ok(None);
@@ -326,14 +432,14 @@ impl RequestCache {
                     "Request channel disconnected unexpectedly".to_string(),
                 ))),
             },
-            PendingRequest::Response(ref result) => {
+            Some(PendingRequest::Response(ref result)) => {
                 return result.clone().map(Some);
             }
         };
-        self.this_user = new_state;
+        self.this_user = Some(new_state);
         Ok(None)
     }
-    pub fn get_repository(&mut self, uuid: Uuid) -> PendingResponse<RemoteRepository> {
+    pub fn get_repository(&mut self, uuid: Uuid) -> PendingResponse<Arc<RemoteRepository>> {
         match self.repositories.entry(uuid) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let (sender, receiver) = mpsc::channel();
@@ -386,45 +492,6 @@ impl RequestCache {
                 entry.insert(PendingRequest::Pending(receiver));
             }
             std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
-                PendingRequest::Unsent => {
-                    let (sender, receiver) = mpsc::channel();
-                    ehttp::fetch(
-                        get_request(&format!("{PUBLIC_URL}/api/repository/{uuid}")),
-                        move |response| {
-                            let response = match response {
-                                Ok(resp) => resp,
-                                Err(e) => {
-                                    sender
-                                        .send(Err(Arc::from(format!(
-                                            "Failed to fetch repository: {e}"
-                                        ))))
-                                        .unwrap_or_else(|e| {
-                                            log::error!("Failed to send error response: {e}");
-                                        });
-                                    return;
-                                }
-                            };
-                            let repo: Result<RemoteRepository, _> = response.json();
-                            match repo {
-                                Ok(repo) => {
-                                    sender.send(Ok(Arc::new(repo))).unwrap_or_else(|e| {
-                                        log::error!("Failed to send repository response: {e}");
-                                    });
-                                }
-                                Err(e) => {
-                                    sender
-                                        .send(Err(Arc::from(format!(
-                                            "Failed to parse repository: {e}"
-                                        ))))
-                                        .unwrap_or_else(|e| {
-                                            log::error!("Failed to send error response: {e}");
-                                        });
-                                }
-                            }
-                        },
-                    );
-                    entry.insert(PendingRequest::Pending(receiver));
-                }
                 PendingRequest::Pending(receiver) => match receiver.try_recv() {
                     Ok(result) => {
                         entry.insert(PendingRequest::Response(result));
@@ -444,5 +511,92 @@ impl RequestCache {
             },
         };
         Ok(None)
+    }
+    pub fn get_stored_repository(
+        &mut self,
+        uuid: Uuid,
+        remote: &Arc<RemoteRepository>,
+    ) -> PendingResponse<Option<Arc<Repository>>> {
+        match self.stored_repositories.entry(uuid) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let (sender, receiver) = mpsc::channel();
+                let remote = Arc::clone(remote);
+                std::thread::spawn(move || {
+                    let stored_repo = CONFIG.get_stored(uuid);
+                    match stored_repo {
+                        Ok(Some(repo)) => {
+                            let diff = remote.files.diff(&repo.folder);
+                            let pitignore = match Pitignore::from_repository(&repo.path) {
+                                Ok(pitignore) => pitignore,
+                                Err(e) => {
+                                    log::error!("Failed to get .pitignore for repository: {e}");
+                                    sender
+                                        .send(Err(Arc::from(format!(
+                                            "Failed to get .pitignore for repository: {e}"
+                                        ))))
+                                        .unwrap_or_else(|e| {
+                                            log::error!("Failed to send error response: {e}");
+                                        });
+                                    return;
+                                }
+                            };
+                            let local = Repository {
+                                local: repo,
+                                remote: Arc::clone(&remote),
+                                diff: Arc::from(diff),
+                                pitignore: Arc::from(pitignore),
+                            };
+                            sender.send(Ok(Some(Arc::from(local)))).unwrap_or_else(|e| {
+                                log::error!("Failed to send stored repository response: {e}");
+                            });
+                        }
+                        Ok(None) => {
+                            sender.send(Ok(None)).unwrap_or_else(|e| {
+                                log::error!("Failed to send empty stored repository response: {e}");
+                            });
+                        }
+                        Err(e) => {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to get stored repository: {e}"
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                        }
+                    }
+                });
+                entry.insert(PendingRequest::Pending(receiver));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                PendingRequest::Pending(receiver) => match receiver.try_recv() {
+                    Ok(result) => {
+                        entry.insert(PendingRequest::Response(result));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        return Ok(None);
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        entry.insert(PendingRequest::Response(Err(Arc::from(
+                            "Request channel disconnected unexpectedly".to_string(),
+                        ))));
+                    }
+                },
+                PendingRequest::Response(result) => {
+                    return result.clone().map(Some);
+                }
+            },
+        };
+        Ok(None)
+    }
+    pub fn reload_repository(&mut self, uuid: Uuid) {
+        self.repositories.remove(&uuid);
+        self.stored_repositories.remove(&uuid);
+    }
+}
+
+impl Default for RequestCache {
+    fn default() -> Self {
+        Self::new()
     }
 }

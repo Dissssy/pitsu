@@ -132,7 +132,7 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
         .map_or("unknown location".into(), |l| l.to_string());
     let text = format!("PITSU has encountered a panic:\n{payload}\n\nLocation:\n{location}");
 
-    match rfd::MessageDialog::new()
+    let result = rfd::MessageDialog::new()
         .set_buttons(rfd::MessageButtons::OkCancelCustom(
             String::from("Copy"),
             String::from("Ignore"),
@@ -141,34 +141,32 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
         .set_description(format!(
             "{text}\n\nWould you like to copy this text to your clipboard?"
         ))
-        .show()
-    {
-        rfd::MessageDialogResult::Yes => {
-            let ctx =
-                clipboard_rs::ClipboardContext::new().expect("Failed to create clipboard context");
-            if let Err(e) = ctx.set_text(text.clone()) {
-                eprintln!("Failed to copy text to clipboard: {e}");
-            }
+        .show();
+
+    if result == rfd::MessageDialogResult::Yes {
+        let ctx =
+            clipboard_rs::ClipboardContext::new().expect("Failed to create clipboard context");
+        if let Err(e) = ctx.set_text(text.clone()) {
+            eprintln!("Failed to copy text to clipboard: {e}");
         }
-        _ => {}
-    };
-}
-
-pub mod in_thread {
-    use std::sync::mpsc::Receiver;
-
-    use super::*;
-
-    pub fn confirm_response(query: &str) -> Receiver<Result<bool>> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let query = query.to_string();
-        std::thread::spawn(move || {
-            sender
-                .send(super::rfd_confirm_response(&query))
-                .unwrap_or_else(|e| {
-                    eprintln!("Failed to send confirmation response: {e}");
-                });
-        });
-        receiver
     }
 }
+
+// pub mod in_thread {
+//     use std::sync::mpsc::Receiver;
+
+//     use super::*;
+
+//     pub fn confirm_response(query: &str) -> Receiver<Result<bool>> {
+//         let (sender, receiver) = std::sync::mpsc::channel();
+//         let query = query.to_string();
+//         std::thread::spawn(move || {
+//             sender
+//                 .send(super::rfd_confirm_response(&query))
+//                 .unwrap_or_else(|e| {
+//                     eprintln!("Failed to send confirmation response: {e}");
+//                 });
+//         });
+//         receiver
+//     }
+// }
