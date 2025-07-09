@@ -1456,11 +1456,11 @@ pub async fn check_user_access(
     }
 }
 
-async fn build_executable(api_key: String, api_username: String) -> Result<PathBuf> {
+async fn build_executable(_api_key: String, _api_username: String) -> Result<PathBuf> {
     tokio::spawn(async {
         // Set the environment variables for the build
-        std::env::set_var("PITSU_API_KEY", api_key);
-        std::env::set_var("PITSU_API_USERNAME", api_username);
+        // std::env::set_var("PITSU_API_KEY", api_key);
+        // std::env::set_var("PITSU_API_USERNAME", api_username);
         // Move to {crate_root}/local
         let crate_root = format!(
             "{}/../",
