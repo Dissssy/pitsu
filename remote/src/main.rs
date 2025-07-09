@@ -1511,6 +1511,25 @@ async fn build_executable() -> Result<PathBuf> {
         // Set the environment variables for the build
         // std::env::set_var("PITSU_API_KEY", api_key);
         // std::env::set_var("PITSU_API_USERNAME", api_username);
+        let commit_hash = {
+            let output = std::process::Command::new("git")
+                .arg("rev-parse")
+                .arg("HEAD")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .output()
+                .map_err(|e| anyhow::anyhow!("Failed to get git commit hash: {}", e))?;
+            if !output.status.success() {
+                return Err(anyhow::anyhow!(
+                    "Git command failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            String::from_utf8(output.stdout)
+                .map_err(|e| anyhow::anyhow!("Failed to parse git commit hash: {}", e))?
+                .trim()
+                .to_string()
+        };
+        std::env::set_var("COMMIT_HASH", commit_hash);
         // Move to {crate_root}/local
         let crate_root = format!(
             "{}/../",

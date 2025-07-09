@@ -33,6 +33,7 @@ pub fn setup() {
 
 pub static PUBLIC_URL: &str = env!("PITSU_PUBLIC_URL");
 pub const MAX_PATH_LENGTH: usize = 32;
+pub const COMMIT_HASH: &str = env!("COMMIT_HASH");
 
 lazy_static! {
     static ref CONFIG_DIR: PathBuf = {

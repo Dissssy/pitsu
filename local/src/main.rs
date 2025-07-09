@@ -21,6 +21,7 @@ mod pitignore;
 static mut UPDATE_APP: bool = false;
 
 fn main() -> anyhow::Result<()> {
+    panic!("{}", config::COMMIT_HASH);
     config::setup();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder {
@@ -71,7 +72,7 @@ fn main() -> anyhow::Result<()> {
 #[derive(Debug, Clone)]
 pub struct Repository {
     local: Arc<LocalRepository>,
-    remote: Arc<RemoteRepository>,
+    // remote: Arc<RemoteRepository>,
     diff: Arc<[Diff]>,
     pitignore: Arc<pitignore::Pitignore>,
 }
@@ -531,7 +532,8 @@ impl RequestCache {
                     let stored_repo = CONFIG.get_stored(uuid);
                     match stored_repo {
                         Ok(Some(repo)) => {
-                            let diff = remote.files.diff(&repo.folder);
+                            // let diff = remote.files.diff(&repo.folder);
+                            let diff = repo.folder.diff(&remote.files);
                             let pitignore = match Pitignore::from_repository(&repo.path) {
                                 Ok(pitignore) => pitignore,
                                 Err(e) => {
@@ -548,7 +550,7 @@ impl RequestCache {
                             };
                             let local = Repository {
                                 local: repo,
-                                remote: Arc::clone(&remote),
+                                // remote: Arc::clone(&remote),
                                 diff: Arc::from(diff),
                                 pitignore: Arc::from(pitignore),
                             };
