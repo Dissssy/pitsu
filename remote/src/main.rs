@@ -932,6 +932,51 @@ async fn invite_user(
     file.into_response(&req)
 }
 
+#[get("/api/local/version")]
+async fn get_local_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Responder {
+    let pool = pool.into_inner();
+    let _user = match get_user(&req, pool.clone()).await {
+        Ok(user) => user,
+        Err(err) => {
+            log::error!("Failed to get bearer token: {err}");
+            return HttpResponse::Unauthorized().body("Unauthorized");
+        }
+    };
+    // git pull in the Pitsu repository
+    let output = match std::process::Command::new("git")
+        .arg("pull")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            log::error!("Failed to run git pull: {err}");
+            return HttpResponse::InternalServerError().body("Failed to update local version");
+        }
+    };
+    if !output.status.success() {
+        log::error!(
+            "Git pull failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return HttpResponse::InternalServerError().body("Failed to update local version");
+    }
+    // get the current git commit hash
+    let output = match std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            log::error!("Failed to get git commit hash: {err}");
+            return HttpResponse::InternalServerError().body("Failed to get local version");
+        }
+    };
+    let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
+    HttpResponse::Ok().body(commit_hash)
+}
 struct InviteLock(Mutex<()>);
 
 impl Deref for InviteLock {
@@ -1004,6 +1049,7 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .service(root)
             .service(api)
             .service(invite_user)
+            .service(get_local_version)
             .service(get_self)
             .service(get_other)
             .service(get_all_users)
