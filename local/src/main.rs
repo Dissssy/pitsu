@@ -17,6 +17,9 @@ mod config;
 mod dialogue;
 mod nerdfonts;
 mod pitignore;
+
+static mut UPDATE_APP: bool = false;
+
 fn main() -> anyhow::Result<()> {
     config::setup();
     let native_options = eframe::NativeOptions {
@@ -58,6 +61,9 @@ fn main() -> anyhow::Result<()> {
     ) {
         log::error!("Failed to run Pitsu: {e}");
         return Err(anyhow::anyhow!("Failed to run Pitsu: {e}"));
+    }
+    if unsafe { UPDATE_APP } {
+        todo!("Update the app to the latest version");
     }
     Ok(())
 }

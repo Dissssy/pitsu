@@ -901,7 +901,7 @@ async fn invite_user(
                 return HttpResponse::InternalServerError().body("Transaction error");
             }
         };
-        let user = match cornucopia::queries::user::get_by_uuid()
+        let _user = match cornucopia::queries::user::get_by_uuid()
             .bind(&transaction, &user_uuid)
             .one()
             .await
@@ -913,7 +913,7 @@ async fn invite_user(
             }
         };
         // eventually expand this to build for the users OS, but for now just windows
-        match build_executable(user.api_key, user.username).await {
+        match build_executable().await {
             Ok(path) => path,
             Err(err) => {
                 log::error!("Failed to build executable: {err}");
@@ -976,6 +976,56 @@ async fn get_local_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> imp
     };
     let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
     HttpResponse::Ok().body(commit_hash)
+}
+
+// like invite except checks via the user's bearer token rather than the invite code
+#[get("/api/local/update")]
+async fn get_latest_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Responder {
+    let pool = pool.into_inner();
+    let _user = match get_user(&req, pool.clone()).await {
+        Ok(user) => user,
+        Err(err) => {
+            log::error!("Failed to get bearer token: {err}");
+            return HttpResponse::Unauthorized().body("Unauthorized");
+        }
+    };
+    // git pull in the Pitsu repository
+    let output = match std::process::Command::new("git")
+        .arg("pull")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            log::error!("Failed to run git pull: {err}");
+            return HttpResponse::InternalServerError().body("Failed to update local version");
+        }
+    };
+    if !output.status.success() {
+        log::error!(
+            "Git pull failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return HttpResponse::InternalServerError().body("Failed to update local version");
+    }
+    // build and serve the executable file
+    let path = match build_executable().await {
+        Ok(path) => path,
+        Err(err) => {
+            log::error!("Failed to build executable: {err}");
+            return HttpResponse::InternalServerError().body("Failed to build executable");
+        }
+    };
+    // serve the executable file as a download
+    let file = match actix_files::NamedFile::open(path) {
+        Ok(file) => file,
+        Err(err) => {
+            log::error!("Failed to open executable file: {err}");
+            return HttpResponse::InternalServerError().body("Failed to open update file");
+        }
+    };
+    // serve the executable file as a download
+    file.into_response(&req)
 }
 struct InviteLock(Mutex<()>);
 
@@ -1456,7 +1506,7 @@ pub async fn check_user_access(
     }
 }
 
-async fn build_executable(_api_key: String, _api_username: String) -> Result<PathBuf> {
+async fn build_executable() -> Result<PathBuf> {
     tokio::spawn(async {
         // Set the environment variables for the build
         // std::env::set_var("PITSU_API_KEY", api_key);
