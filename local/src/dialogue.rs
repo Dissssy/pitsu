@@ -125,7 +125,7 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
     let payload = info
         .payload()
         .downcast_ref::<&str>()
-        .unwrap_or(&"No payload")
+        .unwrap_or(&"NO PANIC PAYLOAD PROVIDED")
         .to_string();
     let location = info
         .location()
