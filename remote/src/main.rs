@@ -1100,6 +1100,7 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .service(api)
             .service(invite_user)
             .service(get_local_version)
+            .service(get_latest_version)
             .service(get_self)
             .service(get_other)
             .service(get_all_users)

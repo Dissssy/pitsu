@@ -21,7 +21,6 @@ mod pitignore;
 static mut UPDATE_APP: bool = false;
 
 fn main() -> anyhow::Result<()> {
-    panic!("{}", config::COMMIT_HASH);
     config::setup();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder {
@@ -64,7 +63,54 @@ fn main() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("Failed to run Pitsu: {e}"));
     }
     if unsafe { UPDATE_APP } {
-        todo!("Update the app to the latest version");
+        // Download the latest version of Pitsu
+        let (sender, receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
+        ehttp::fetch(
+            get_request(&format!("{PUBLIC_URL}/api/local/update")),
+            move |response| {
+                let response = match response {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        sender
+                            .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to send error response: {e}");
+                            });
+                        return;
+                    }
+                };
+                if response.status != 200 {
+                    sender
+                        .send(Err(Arc::from(format!(
+                            "Failed to fetch update: {}",
+                            response.status
+                        ))))
+                        .unwrap_or_else(|e| {
+                            log::error!("Failed to send error response: {e}");
+                        });
+                    return;
+                }
+                let file = response.bytes;
+                sender.send(Ok(file.into())).unwrap_or_else(|e| {
+                    log::error!("Failed to send update file: {e}");
+                });
+            },
+        );
+        let file = receiver
+            .recv()
+            .expect("Failed to receive update file")
+            .expect("Failed to download update file");
+        // Overwrite the current executable with the new one
+        let current_exe = std::env::current_exe().expect("Failed to get current executable path");
+        let new_exe_path = current_exe.with_file_name("pitsu_new.exe");
+        std::fs::write(&new_exe_path, file).expect("Failed to write new executable file");
+        // Replace the current executable with the new one
+        std::fs::rename(new_exe_path, &current_exe).expect("Failed to replace current executable");
+        // Restart the application
+        #[allow(clippy::zombie_processes)]
+        std::process::Command::new(&current_exe)
+            .spawn()
+            .expect("Failed to restart Pitsu");
     }
     Ok(())
 }
@@ -257,10 +303,27 @@ impl App {
                         self.ppp = self.ppp.round();
                     }
                 });
+                self.update_app_button(ui, ctx);
             });
         });
         ui.separator();
         new_state
+    }
+
+    fn update_app_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if let Ok(Some(commit_hash)) = self.cache.remote_commit_hash() {
+            if &*commit_hash != config::COMMIT_HASH
+                && ui
+                    .button(nerdfonts::UPDATE)
+                    .on_hover_text("Update Pitsu to the latest version")
+                    .clicked()
+            {
+                unsafe { UPDATE_APP = true };
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else {
+            ui.spinner();
+        }
     }
 
     fn show_stored_repository_details(&mut self, ui: &mut egui::Ui, stored_repo: &Repository) {
@@ -356,6 +419,7 @@ impl App {
 }
 
 pub struct RequestCache {
+    remote_commit_hash: Option<PendingRequest<Arc<str>>>,
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
@@ -377,10 +441,82 @@ type PendingResponse<T> = Result<Option<T>, Arc<str>>;
 impl RequestCache {
     pub fn new() -> Self {
         RequestCache {
+            remote_commit_hash: None,
             this_user: None,
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
         }
+    }
+    pub fn remote_commit_hash(&mut self) -> PendingResponse<Arc<str>> {
+        let new_state = match &self.remote_commit_hash {
+            None => {
+                let (sender, receiver) = mpsc::channel();
+                ehttp::fetch(
+                    get_request(&format!("{PUBLIC_URL}/api/local/version")),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!(
+                                        "Failed to fetch commit hash: {e}"
+                                    ))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 200 {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to fetch commit hash: {}",
+                                    response.status
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        let commit_hash: Result<Arc<str>, Arc<str>> = match response.text() {
+                            Some(text) => Ok(Arc::from(text)),
+                            None => Err(Arc::from("Failed to read response: No text found")),
+                        };
+                        match commit_hash {
+                            Ok(commit_hash) => {
+                                sender.send(Ok(commit_hash)).unwrap_or_else(|e| {
+                                    log::error!("Failed to send commit hash response: {e}");
+                                });
+                            }
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!(
+                                        "Failed to parse commit hash: {e}"
+                                    ))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                            }
+                        }
+                    },
+                );
+                PendingRequest::Pending(receiver)
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => PendingRequest::Response(result),
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => PendingRequest::Response(Err(Arc::from(
+                    "Request channel disconnected unexpectedly".to_string(),
+                ))),
+            },
+            Some(PendingRequest::Response(ref result)) => {
+                return result.clone().map(Some);
+            }
+        };
+        self.remote_commit_hash = Some(new_state);
+        Ok(None)
     }
     pub fn this_user(&mut self) -> PendingResponse<Arc<ThisUser>> {
         let new_state = match &self.this_user {
