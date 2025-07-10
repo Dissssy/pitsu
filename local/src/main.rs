@@ -340,7 +340,7 @@ impl App {
         if let Ok(Some(commit_hash)) = self.cache.remote_commit_hash() {
             if &*commit_hash != config::COMMIT_HASH
                 && ui
-                    .button(nerdfonts::UPDATE)
+                    .button(egui::RichText::new(nerdfonts::UPDATE).color(egui::Color32::GREEN))
                     .on_hover_text("Update Pitsu to the latest version")
                     .clicked()
             {
