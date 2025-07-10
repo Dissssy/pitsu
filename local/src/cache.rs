@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc},
 };
 
-use eframe::egui::{self, FontData};
-use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository, ThisUser};
+use pitsu_lib::{RemoteRepository, ThisUser};
 use uuid::Uuid;
 
 use crate::{
-    config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL},
+    config::{get_request, CONFIG, PUBLIC_URL},
     pitignore::Pitignore,
     Repository,
 };

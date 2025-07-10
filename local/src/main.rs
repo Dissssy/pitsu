@@ -1,18 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{
-    collections::HashMap,
-    sync::{mpsc, Arc, Mutex},
-};
+use std::sync::{mpsc, Arc};
 
 use eframe::egui::{self, FontData};
-use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository, ThisUser};
+use pitsu_lib::{AccessLevel, ChangeType, Diff};
 use uuid::Uuid;
 
-use crate::{
-    config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL},
-    pitignore::Pitignore,
-};
+use crate::config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL};
 mod cache;
 mod config;
 mod dialogue;
