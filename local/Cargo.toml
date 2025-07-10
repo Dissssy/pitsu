@@ -17,7 +17,7 @@ anyhow = "1.0.98"
 log = "0.4.27"
 ehttp = { version = "0.5.0", features = ["json", "multipart"] }
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
-rfd = { version = "0.15.3", features = ["tokio", "common-controls-v6"] }
+rfd = { version = "0.15.3", features = ["tokio"] }
 env_logger = "0.11.8"
 include-flate = "0.3.0"
 image = "0.25.6"

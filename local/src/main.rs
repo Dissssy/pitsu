@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
 };
 
 use eframe::egui::{self, FontData};
@@ -18,7 +18,9 @@ mod dialogue;
 mod nerdfonts;
 mod pitignore;
 
-static mut UPDATE_APP: bool = false;
+lazy_static::lazy_static! {
+    static ref UPDATE: Arc<Mutex<Option<Arc<[u8]>>>> = Arc::new(Mutex::new(None));
+}
 
 fn main() -> anyhow::Result<()> {
     config::setup();
@@ -62,55 +64,53 @@ fn main() -> anyhow::Result<()> {
         log::error!("Failed to run Pitsu: {e}");
         return Err(anyhow::anyhow!("Failed to run Pitsu: {e}"));
     }
-    if unsafe { UPDATE_APP } {
-        // Download the latest version of Pitsu
-        let (sender, receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
-        ehttp::fetch(
-            get_request(&format!("{PUBLIC_URL}/api/local/update")),
-            move |response| {
-                let response = match response {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        sender
-                            .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
-                            .unwrap_or_else(|e| {
-                                log::error!("Failed to send error response: {e}");
-                            });
-                        return;
-                    }
-                };
-                if response.status != 200 {
-                    sender
-                        .send(Err(Arc::from(format!(
-                            "Failed to fetch update: {}",
-                            response.status
-                        ))))
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to send error response: {e}");
-                        });
-                    return;
-                }
-                let file = response.bytes;
-                sender.send(Ok(file.into())).unwrap_or_else(|e| {
-                    log::error!("Failed to send update file: {e}");
-                });
-            },
-        );
-        let file = receiver
-            .recv()
-            .expect("Failed to receive update file")
-            .expect("Failed to download update file");
+    let update = UPDATE.lock().expect("Failed to lock UPDATE mutex");
+    if let Some(update) = &*update {
+        // // Download the latest version of Pitsu
+        // let (sender, receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
+        // ehttp::fetch(
+        //     get_request(&format!("{PUBLIC_URL}/api/local/update")),
+        //     move |response| {
+        //         let response = match response {
+        //             Ok(resp) => resp,
+        //             Err(e) => {
+        //                 sender
+        //                     .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
+        //                     .unwrap_or_else(|e| {
+        //                         log::error!("Failed to send error response: {e}");
+        //                     });
+        //                 return;
+        //             }
+        //         };
+        //         if response.status != 200 {
+        //             sender
+        //                 .send(Err(Arc::from(format!(
+        //                     "Failed to fetch update: {}",
+        //                     response.status
+        //                 ))))
+        //                 .unwrap_or_else(|e| {
+        //                     log::error!("Failed to send error response: {e}");
+        //                 });
+        //             return;
+        //         }
+        //         let file = response.bytes;
+        //         sender.send(Ok(file.into())).unwrap_or_else(|e| {
+        //             log::error!("Failed to send update file: {e}");
+        //         });
+        //     },
+        // );
         // Overwrite the current executable with the new one
         let current_exe = std::env::current_exe().expect("Failed to get current executable path");
         let new_exe_path = current_exe.with_file_name("pitsu_new.exe");
-        std::fs::write(&new_exe_path, file).expect("Failed to write new executable file");
+        std::fs::write(&new_exe_path, update).expect("Failed to write new executable file");
         // Replace the current executable with the new one
         std::fs::rename(new_exe_path, &current_exe).expect("Failed to replace current executable");
         // Restart the application
-        #[allow(clippy::zombie_processes)]
         std::process::Command::new(&current_exe)
             .spawn()
-            .expect("Failed to restart Pitsu");
+            .expect("Failed to restart Pitsu")
+            .wait()
+            .expect("Failed to wait for Pitsu restart");
     }
     Ok(())
 }
@@ -131,6 +131,8 @@ pub struct App {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
+    // update requested
+    Updating,
     Main,
     RepositoryDetails { uuid: Uuid },
 }
@@ -138,8 +140,29 @@ pub enum AppState {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.state == AppState::Updating {
+                match self.cache.update() {
+                    Ok(Some(update)) => {
+                        *UPDATE.lock().expect("Failed to lock UPDATE mutex") = Some(update);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Ok(None) => {
+                        ui.spinner();
+                    }
+                    Err(e) => {
+                        ui.label(format!("Error fetching update: {e}"));
+                        if ui.button("Cancel Update").clicked() {
+                            self.state = AppState::Main;
+                        }
+                    }
+                }
+                return;
+            }
             let mut new_state = self.header(ui, ctx, frame);
             match self.state {
+                AppState::Updating => {
+                    // nothing, handle above so we dont render a header
+                }
                 AppState::Main => {
                     if let Ok(Some(this)) = self.cache.this_user() {
                         let table = egui_extras::TableBuilder::new(ui)
@@ -242,6 +265,7 @@ impl App {
         _frame: &mut eframe::Frame,
     ) -> Option<AppState> {
         let go_back = match self.state {
+            AppState::Updating => None,
             AppState::Main => None,
             AppState::RepositoryDetails { .. } => Some(AppState::Main),
         };
@@ -267,6 +291,9 @@ impl App {
                 new_state = go_back;
             }
             match self.state {
+                AppState::Updating => {
+                    // Nothing to show here, handled above
+                }
                 AppState::Main => {
                     ui.label("Repositories");
                 }
@@ -303,14 +330,14 @@ impl App {
                         self.ppp = self.ppp.round();
                     }
                 });
-                self.update_app_button(ui, ctx);
+                self.update_app_button(ui);
             });
         });
         ui.separator();
         new_state
     }
 
-    fn update_app_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn update_app_button(&mut self, ui: &mut egui::Ui) {
         if let Ok(Some(commit_hash)) = self.cache.remote_commit_hash() {
             if &*commit_hash != config::COMMIT_HASH
                 && ui
@@ -318,8 +345,7 @@ impl App {
                     .on_hover_text("Update Pitsu to the latest version")
                     .clicked()
             {
-                unsafe { UPDATE_APP = true };
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.state = AppState::Updating;
             }
         } else {
             ui.spinner();
@@ -420,6 +446,7 @@ impl App {
 
 pub struct RequestCache {
     remote_commit_hash: Option<PendingRequest<Arc<str>>>,
+    update: Option<PendingRequest<Arc<[u8]>>>,
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
@@ -442,6 +469,7 @@ impl RequestCache {
     pub fn new() -> Self {
         RequestCache {
             remote_commit_hash: None,
+            update: None,
             this_user: None,
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
@@ -516,6 +544,59 @@ impl RequestCache {
             }
         };
         self.remote_commit_hash = Some(new_state);
+        Ok(None)
+    }
+    pub fn update(&mut self) -> PendingResponse<Arc<[u8]>> {
+        let new_state = match &self.update {
+            None => {
+                let (sender, receiver) = mpsc::channel();
+                ehttp::fetch(
+                    get_request(&format!("{PUBLIC_URL}/api/local/update")),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 200 {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to fetch update: {}",
+                                    response.status
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        let file = response.bytes;
+                        sender.send(Ok(file.into())).unwrap_or_else(|e| {
+                            log::error!("Failed to send update file: {e}");
+                        });
+                    },
+                );
+                PendingRequest::Pending(receiver)
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => PendingRequest::Response(result),
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => PendingRequest::Response(Err(Arc::from(
+                    "Request channel disconnected unexpectedly".to_string(),
+                ))),
+            },
+            Some(PendingRequest::Response(ref result)) => {
+                return result.clone().map(Some);
+            }
+        };
+        self.update = Some(new_state);
         Ok(None)
     }
     pub fn this_user(&mut self) -> PendingResponse<Arc<ThisUser>> {
@@ -670,7 +751,7 @@ impl RequestCache {
                         Ok(Some(repo)) => {
                             // let diff = remote.files.diff(&repo.folder);
                             let diff = repo.folder.diff(&remote.files);
-                            let pitignore = match Pitignore::from_repository(&repo.path) {
+                            let pitignore = match Pitignore::from_repository(repo.path.clone()) {
                                 Ok(pitignore) => pitignore,
                                 Err(e) => {
                                     log::error!("Failed to get .pitignore for repository: {e}");

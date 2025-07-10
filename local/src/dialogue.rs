@@ -133,10 +133,11 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
     let text = format!("PITSU has encountered a panic:\n{payload}\n\nLocation:\n{location}");
 
     let result = rfd::MessageDialog::new()
-        .set_buttons(rfd::MessageButtons::OkCancelCustom(
-            String::from("Copy"),
-            String::from("Ignore"),
-        ))
+        // .set_buttons(rfd::MessageButtons::OkCancelCustom(
+        //     String::from("Copy"),
+        //     String::from("Ignore"),
+        // ))
+        .set_buttons(rfd::MessageButtons::YesNo)
         .set_title("Panic Occurred")
         .set_description(format!(
             "{text}\n\nWould you like to copy this text to your clipboard?"

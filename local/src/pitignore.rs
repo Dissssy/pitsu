@@ -24,7 +24,7 @@ impl Pitignore {
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
-    pub fn from_repository(root_folder: &std::path::PathBuf) -> Result<Self> {
+    pub fn from_repository(root_folder: std::path::PathBuf) -> Result<Self> {
         let pitignore_path = root_folder.join(".pitignore");
         if !pitignore_path.exists() {
             return Ok(Self::blank());

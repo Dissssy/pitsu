@@ -7,3 +7,4 @@ shared/test.json
 .cargo/config.toml
 local/.cargo/config.toml
 notes
+*.old
