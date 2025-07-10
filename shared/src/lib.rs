@@ -537,7 +537,13 @@ impl VersionNumber {
         let mut patch = 0;
         for line in contents.lines() {
             if line.starts_with("version = ") {
-                let version = line.split('=').nth(1)?.trim();
+                let version = line
+                    .split('=')
+                    .nth(1)
+                    .ok_or(anyhow::anyhow!(
+                        "Failed to parse version line in Cargo.toml"
+                    ))?
+                    .trim();
                 let parts: Vec<&str> = version.split('.').collect();
                 if parts.len() >= 3 {
                     major = parts[0].trim_matches('"').parse()?;
