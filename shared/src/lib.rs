@@ -537,12 +537,12 @@ impl VersionNumber {
         let mut patch = 0;
         for line in contents.lines() {
             if line.starts_with("version = ") {
-                let version = line.split('=').nth(1).unwrap().trim();
+                let version = line.split('=').nth(1)?.trim();
                 let parts: Vec<&str> = version.split('.').collect();
                 if parts.len() >= 3 {
-                    major = parts[0].parse()?;
-                    minor = parts[1].parse()?;
-                    patch = parts[2].parse()?;
+                    major = parts[0].trim_matches('"').parse()?;
+                    minor = parts[1].trim_matches('"').parse()?;
+                    patch = parts[2].trim_matches('"').parse()?;
                 }
             }
         }
