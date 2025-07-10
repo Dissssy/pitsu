@@ -3,7 +3,7 @@ use anyhow::Result;
 use core::panic;
 use ehttp::{fetch, Request};
 use lazy_static::lazy_static;
-use pitsu_lib::{RootFolder, ThisUser};
+use pitsu_lib::{RootFolder, ThisUser, VersionNumber};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -33,7 +33,7 @@ pub fn setup() {
 
 pub static PUBLIC_URL: &str = env!("PITSU_PUBLIC_URL");
 pub const MAX_PATH_LENGTH: usize = 32;
-pub const COMMIT_HASH: &str = env!("COMMIT_HASH");
+// pub const VERSION_NUMBER: &str = env!("VERSION_NUMBER");
 
 lazy_static! {
     static ref CONFIG_DIR: PathBuf = {
@@ -49,6 +49,18 @@ lazy_static! {
         };
         path.push("pitsu");
         path
+    };
+    pub static ref VERSION_NUMBER: VersionNumber = {
+        // serde_json::from_str(env!("VERSION_NUMBER")).unwrap_or_else(|err| {
+        //     log::error!("Failed to parse version number: {err}");
+        //     panic!("Failed to parse version number: {err}");
+        // })
+        VersionNumber {
+            major: env!("VERSION_MAJOR").parse().expect("Failed to parse major version"),
+            minor: env!("VERSION_MINOR").parse().expect("Failed to parse minor version"),
+            patch: env!("VERSION_PATCH").parse().expect("Failed to parse patch version"),
+            folder_hash: env!("VERSION_HASH").into(),
+        }
     };
     pub static ref CONFIG: Config = load_config().unwrap_or_else(|err| {
         log::error!("Failed to load configuration: {err}");

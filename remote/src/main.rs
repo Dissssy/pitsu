@@ -16,7 +16,7 @@ use pitsu_lib::{
     anyhow::{self, Result},
     decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload,
     RemoteRepository, RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User,
-    UserWithAccess,
+    UserWithAccess, VersionNumber,
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -943,39 +943,46 @@ async fn get_local_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> imp
         }
     };
     // git pull in the Pitsu repository
-    let output = match std::process::Command::new("git")
-        .arg("pull")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            log::error!("Failed to run git pull: {err}");
-            return HttpResponse::InternalServerError().body("Failed to update local version");
-        }
-    };
-    if !output.status.success() {
-        log::error!(
-            "Git pull failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return HttpResponse::InternalServerError().body("Failed to update local version");
-    }
+    // let output = match std::process::Command::new("git")
+    //     .arg("pull")
+    //     .current_dir(env!("CARGO_MANIFEST_DIR"))
+    //     .output()
+    // {
+    //     Ok(output) => output,
+    //     Err(err) => {
+    //         log::error!("Failed to run git pull: {err}");
+    //         return HttpResponse::InternalServerError().body("Failed to update local version");
+    //     }
+    // };
+    // if !output.status.success() {
+    //     log::error!(
+    //         "Git pull failed: {}",
+    //         String::from_utf8_lossy(&output.stderr)
+    //     );
+    //     return HttpResponse::InternalServerError().body("Failed to update local version");
+    // }
     // get the current git commit hash
-    let output = match std::process::Command::new("git")
-        .arg("rev-parse")
-        .arg("HEAD")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-    {
-        Ok(output) => output,
+    // let output = match std::process::Command::new("git")
+    //     .arg("rev-parse")
+    //     .arg("HEAD")
+    //     .current_dir(env!("CARGO_MANIFEST_DIR"))
+    //     .output()
+    // {
+    //     Ok(output) => output,
+    //     Err(err) => {
+    //         log::error!("Failed to get git commit hash: {err}");
+    //         return HttpResponse::InternalServerError().body("Failed to get local version");
+    //     }
+    // };
+    // let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
+    let version_number = match get_client_version() {
+        Ok(version) => version,
         Err(err) => {
-            log::error!("Failed to get git commit hash: {err}");
+            log::error!("Failed to get client version: {err}");
             return HttpResponse::InternalServerError().body("Failed to get local version");
         }
     };
-    let commit_hash = String::from_utf8_lossy(&output.stdout).to_string();
-    HttpResponse::Ok().body(commit_hash)
+    HttpResponse::Ok().json(version_number)
 }
 
 // like invite except checks via the user's bearer token rather than the invite code
@@ -990,24 +997,24 @@ async fn get_latest_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> im
         }
     };
     // git pull in the Pitsu repository
-    let output = match std::process::Command::new("git")
-        .arg("pull")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .output()
-    {
-        Ok(output) => output,
-        Err(err) => {
-            log::error!("Failed to run git pull: {err}");
-            return HttpResponse::InternalServerError().body("Failed to update local version");
-        }
-    };
-    if !output.status.success() {
-        log::error!(
-            "Git pull failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return HttpResponse::InternalServerError().body("Failed to update local version");
-    }
+    // let output = match std::process::Command::new("git")
+    //     .arg("pull")
+    //     .current_dir(env!("CARGO_MANIFEST_DIR"))
+    //     .output()
+    // {
+    //     Ok(output) => output,
+    //     Err(err) => {
+    //         log::error!("Failed to run git pull: {err}");
+    //         return HttpResponse::InternalServerError().body("Failed to update local version");
+    //     }
+    // };
+    // if !output.status.success() {
+    //     log::error!(
+    //         "Git pull failed: {}",
+    //         String::from_utf8_lossy(&output.stderr)
+    //     );
+    //     return HttpResponse::InternalServerError().body("Failed to update local version");
+    // }
     // build and serve the executable file
     let path = match build_executable().await {
         Ok(path) => path,
@@ -1512,25 +1519,26 @@ async fn build_executable() -> Result<PathBuf> {
         // Set the environment variables for the build
         // std::env::set_var("PITSU_API_KEY", api_key);
         // std::env::set_var("PITSU_API_USERNAME", api_username);
-        let commit_hash = {
-            let output = std::process::Command::new("git")
-                .arg("rev-parse")
-                .arg("HEAD")
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .output()
-                .map_err(|e| anyhow::anyhow!("Failed to get git commit hash: {}", e))?;
-            if !output.status.success() {
-                return Err(anyhow::anyhow!(
-                    "Git command failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-            String::from_utf8(output.stdout)
-                .map_err(|e| anyhow::anyhow!("Failed to parse git commit hash: {}", e))?
-                .trim()
-                .to_string()
-        };
-        std::env::set_var("COMMIT_HASH", commit_hash);
+        // let version_number = {
+        //     let output = std::process::Command::new("git")
+        //         .arg("rev-parse")
+        //         .arg("HEAD")
+        //         .current_dir(env!("CARGO_MANIFEST_DIR"))
+        //         .output()
+        //         .map_err(|e| anyhow::anyhow!("Failed to get git commit hash: {}", e))?;
+        //     if !output.status.success() {
+        //         return Err(anyhow::anyhow!(
+        //             "Git command failed: {}",
+        //             String::from_utf8_lossy(&output.stderr)
+        //         ));
+        //     }
+        //     String::from_utf8(output.stdout)
+        //         .map_err(|e| anyhow::anyhow!("Failed to parse git commit hash: {}", e))?
+        //         .trim()
+        //         .to_string()
+        // };
+        let version_number = get_client_version()?;
+        std::env::set_var("VERSION_NUMBER", serde_json::to_string(&version_number)?);
         // Move to {crate_root}/local
         let crate_root = format!(
             "{}/../",
@@ -1560,4 +1568,31 @@ async fn build_executable() -> Result<PathBuf> {
         Ok(PathBuf::from(executable_path))
     })
     .await?
+}
+
+fn get_client_version() -> Result<VersionNumber> {
+    let output = match std::process::Command::new("git")
+        .arg("pull")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            log::error!("Failed to run git pull: {err}");
+            return Err(anyhow::anyhow!("Failed to update local version"));
+        }
+    };
+    if !output.status.success() {
+        log::error!(
+            "Git pull failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Err(anyhow::anyhow!("Failed to update local version"));
+    }
+    // We need to read the line from the Cargo.toml file in ../local that has the version number
+    let client_path = PathBuf::from(format!(
+        "{}/../local",
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string())
+    ));
+    VersionNumber::new(&client_path)
 }

@@ -3,7 +3,7 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use pitsu_lib::{RemoteRepository, ThisUser};
+use pitsu_lib::{RemoteRepository, ThisUser, VersionNumber};
 use uuid::Uuid;
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub struct RequestCache {
-    remote_commit_hash: Option<PendingRequest<Arc<str>>>,
+    remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
@@ -35,14 +35,14 @@ type PendingResponse<T> = Result<Option<T>, Arc<str>>;
 impl RequestCache {
     pub fn new() -> Self {
         RequestCache {
-            remote_commit_hash: None,
+            remote_version_number: None,
             this_user: None,
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
         }
     }
-    pub fn remote_commit_hash(&mut self) -> PendingResponse<Arc<str>> {
-        let new_state = match &self.remote_commit_hash {
+    pub fn remote_version_number(&mut self) -> PendingResponse<Arc<VersionNumber>> {
+        let new_state = match &self.remote_version_number {
             None => {
                 let (sender, receiver) = mpsc::channel();
                 ehttp::fetch(
@@ -72,15 +72,34 @@ impl RequestCache {
                                 });
                             return;
                         }
-                        let commit_hash: Result<Arc<str>, Arc<str>> = match response.text() {
-                            Some(text) => Ok(Arc::from(text.trim())),
-                            None => Err(Arc::from("Failed to read response: No text found")),
-                        };
-                        match commit_hash {
-                            Ok(commit_hash) => {
-                                sender.send(Ok(commit_hash)).unwrap_or_else(|e| {
-                                    log::error!("Failed to send commit hash response: {e}");
-                                });
+                        // let version_number: Result<Arc<str>, Arc<str>> = match response.text() {
+                        //     Some(text) => Ok(Arc::from(text.trim())),
+                        //     None => Err(Arc::from("Failed to read response: No text found")),
+                        // };
+                        // match version_number {
+                        //     Ok(version_number) => {
+                        //         sender.send(Ok(version_number)).unwrap_or_else(|e| {
+                        //             log::error!("Failed to send commit hash response: {e}");
+                        //         });
+                        //     }
+                        //     Err(e) => {
+                        //         sender
+                        //             .send(Err(Arc::from(format!(
+                        //                 "Failed to parse commit hash: {e}"
+                        //             ))))
+                        //             .unwrap_or_else(|e| {
+                        //                 log::error!("Failed to send error response: {e}");
+                        //             });
+                        //     }
+                        // }
+                        let version_number = response.json::<VersionNumber>();
+                        match version_number {
+                            Ok(version_number) => {
+                                sender
+                                    .send(Ok(Arc::from(version_number)))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send commit hash response: {e}");
+                                    });
                             }
                             Err(e) => {
                                 sender
@@ -109,7 +128,7 @@ impl RequestCache {
                 return result.clone().map(Some);
             }
         };
-        self.remote_commit_hash = Some(new_state);
+        self.remote_version_number = Some(new_state);
         Ok(None)
     }
     pub fn this_user(&mut self) -> PendingResponse<Arc<ThisUser>> {
@@ -262,8 +281,8 @@ impl RequestCache {
                     let stored_repo = CONFIG.get_stored(uuid);
                     match stored_repo {
                         Ok(Some(repo)) => {
-                            let diff = remote.files.diff(&repo.folder);
-                            // let diff = repo.folder.diff(&remote.files);
+                            // let mut diff = remote.files.diff(&repo.folder);
+                            let mut diff = Arc::from(repo.folder.diff(&remote.files));
                             let pitignore = match Pitignore::from_repository(repo.path.clone()) {
                                 Ok(pitignore) => pitignore,
                                 Err(e) => {
@@ -278,10 +297,11 @@ impl RequestCache {
                                     return;
                                 }
                             };
+                            diff = pitignore.apply_patterns(&diff);
                             let local = Repository {
                                 local: repo,
                                 // remote: Arc::clone(&remote),
-                                diff: Arc::from(diff),
+                                diff,
                                 pitignore: Arc::from(pitignore),
                             };
                             sender.send(Ok(Some(Arc::from(local)))).unwrap_or_else(|e| {

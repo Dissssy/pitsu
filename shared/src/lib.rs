@@ -3,6 +3,7 @@ use anyhow::Result;
 use base64::Engine as _;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::{
     io::{Read as _, Write as _},
     path::PathBuf,
@@ -102,6 +103,10 @@ impl RootFolder {
         recursive_count(&self.children)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.children.is_empty()
+    }
+
     pub fn ingest_folder(root: &PathBuf) -> Result<Self> {
         let mut children: Vec<File> = std::fs::read_dir(root)?
             .par_bridge()
@@ -147,17 +152,17 @@ impl RootFolder {
         })
     }
 
-    pub fn diff(&self, remote: &Self) -> Vec<Diff> {
+    pub fn diff(&self, server: &Self) -> Vec<Diff> {
         let mut diffs = Vec::new();
 
         let self_files = File::files(self.children.clone(), "".into());
-        let other_files = File::files(remote.children.clone(), "".into());
+        let other_files = File::files(server.children.clone(), "".into());
 
         for file in &self_files {
             if !other_files.iter().any(|f| f.full_path == file.full_path) {
                 diffs.push(Diff {
                     full_path: file.full_path.clone(),
-                    change_type: ChangeType::Removed,
+                    change_type: ChangeType::OnClient,
                 });
             } else if other_files
                 .iter()
@@ -175,7 +180,7 @@ impl RootFolder {
             if !self_files.iter().any(|f| f.full_path == file.full_path) {
                 diffs.push(Diff {
                     full_path: file.full_path.clone(),
-                    change_type: ChangeType::Added,
+                    change_type: ChangeType::OnServer,
                 });
             }
         }
@@ -213,6 +218,34 @@ impl RootFolder {
         }
         Ok(current_folder)
     }
+    // pub fn iter_files<'a>(&'a self) -> FileIter<'a> {
+    //     FileIter {
+    //         stack: self.children.iter().collect(),
+    //     }
+    // }
+    pub fn files(&self) -> Vec<(Arc<str>, u64)> {
+        recursive_flatten(&self.children, "".into())
+    }
+}
+
+fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<(Arc<str>, u64)> {
+    let mut result = Vec::new();
+    for file in files {
+        match file {
+            File::Folder { name, children, .. } => {
+                let new_path = format!("{path_so_far}/{name}");
+                result.extend(recursive_flatten(children, new_path));
+            }
+            File::File {
+                name,
+                hash: _,
+                size,
+            } => {
+                result.push((format!("{path_so_far}/{name}").into(), *size));
+            }
+        }
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -228,10 +261,10 @@ pub struct Diff {
     pub change_type: ChangeType,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ChangeType {
-    Added,
-    Removed,
+    OnServer,
+    OnClient,
     Modified,
 }
 
@@ -474,4 +507,104 @@ pub fn encode_string_base64(data: &str) -> String {
 pub fn decode_string_base64(data: &str) -> Result<String> {
     let bytes = decode_base64(data)?;
     String::from_utf8(bytes).map_err(|e| anyhow::anyhow!("Failed to decode base64 string: {}", e))
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VersionNumber {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub folder_hash: String,
+}
+
+impl std::fmt::Display for VersionNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl VersionNumber {
+    pub fn new(path: &PathBuf) -> Result<Self> {
+        let cargo_toml_path = path.join("Cargo.toml");
+        if !cargo_toml_path.exists() {
+            return Err(anyhow::anyhow!("Cargo.toml not found"));
+        }
+        let mut file = std::fs::File::open(cargo_toml_path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        let mut major = 0;
+        let mut minor = 0;
+        let mut patch = 0;
+        for line in contents.lines() {
+            if line.starts_with("version = ") {
+                let version = line.split('=').nth(1).unwrap().trim();
+                let parts: Vec<&str> = version.split('.').collect();
+                if parts.len() >= 3 {
+                    major = parts[0].parse()?;
+                    minor = parts[1].parse()?;
+                    patch = parts[2].parse()?;
+                }
+            }
+        }
+        if major == 0 && minor == 0 && patch == 0 {
+            return Err(anyhow::anyhow!("Version not found in Cargo.toml"));
+        }
+        // Get a hash of the folder contents
+        let mut hasher = sha2::Sha256::new();
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            if entry.file_type()?.is_file() {
+                let mut file = std::fs::File::open(entry.path())?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer)?;
+                hasher.update(&buffer);
+            }
+        }
+        let folder_hash = hasher.finalize().to_vec();
+        let folder_hash = base64::engine::general_purpose::STANDARD.encode(folder_hash);
+        Ok(VersionNumber {
+            major,
+            minor,
+            patch,
+            folder_hash,
+        })
+    }
+    pub fn is_dev(&self) -> bool {
+        self.folder_hash == "dev"
+    }
+}
+
+impl std::cmp::Ord for VersionNumber {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.major > other.major {
+            return std::cmp::Ordering::Greater;
+        } else if self.major < other.major {
+            return std::cmp::Ordering::Less;
+        }
+        if self.minor > other.minor {
+            return std::cmp::Ordering::Greater;
+        } else if self.minor < other.minor {
+            return std::cmp::Ordering::Less;
+        }
+        if self.patch > other.patch {
+            return std::cmp::Ordering::Greater;
+        } else if self.patch < other.patch {
+            return std::cmp::Ordering::Less;
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl std::cmp::PartialOrd for VersionNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for VersionNumber {}
+
+impl PartialEq for VersionNumber {
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major && self.minor == other.minor && self.patch == other.patch
+    }
 }
