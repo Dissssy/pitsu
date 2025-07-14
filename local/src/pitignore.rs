@@ -6,12 +6,12 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pitignore {
     #[serde(rename = "overrides")]
-    pub patterns: Vec<Pattern>,
+    pub patterns: Vec<(usize, Pattern)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
-    pub pattern: Arc<str>,
+    pub pattern: String,
     starts_with: Option<Arc<str>>,
     ends_with: Option<Arc<str>>,
     pub negated: bool,
@@ -32,7 +32,8 @@ impl Pitignore {
         let contents = std::fs::read_to_string(pitignore_path)?;
         let patterns = contents
             .lines()
-            .filter_map(|line| {
+            .enumerate()
+            .filter_map(|(index, line)| {
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
                     return None;
@@ -65,12 +66,15 @@ impl Pitignore {
                     // There is no pattern at all
                     return None;
                 }
-                Some(Pattern {
-                    pattern: pattern.into(),
-                    starts_with,
-                    ends_with,
-                    negated,
-                })
+                Some((
+                    index,
+                    Pattern {
+                        pattern: pattern.into(),
+                        starts_with,
+                        ends_with,
+                        negated,
+                    },
+                ))
             })
             .collect();
 
@@ -79,17 +83,17 @@ impl Pitignore {
     pub fn save_to_repository(&self, root_folder: std::path::PathBuf) -> Result<()> {
         let pitignore_path = root_folder.join(".pitignore");
         let mut contents = String::new();
-        for pattern in &self.patterns {
+        for (_index, pattern) in &self.patterns {
             if pattern.negated {
                 contents.push('!');
             }
             contents.push_str(&pattern.pattern);
-            if let Some(starts_with) = &pattern.starts_with {
-                contents.push_str(starts_with);
-            }
-            if let Some(ends_with) = &pattern.ends_with {
-                contents.push_str(ends_with);
-            }
+            // if let Some(starts_with) = &pattern.starts_with {
+            //     contents.push_str(starts_with);
+            // }
+            // if let Some(ends_with) = &pattern.ends_with {
+            //     contents.push_str(ends_with);
+            // }
             contents.push('\n');
         }
         std::fs::write(pitignore_path, contents)?;
@@ -101,7 +105,7 @@ impl Pitignore {
         for diff in Arc::clone(diffs).iter() {
             let mut should_remove = false;
             let mut matches_negated = false;
-            for pattern in &self.patterns {
+            for (_index, pattern) in &self.patterns {
                 let mut both_match = true;
                 if let Some(starts_with) = &pattern.starts_with {
                     if !diff

@@ -90,6 +90,7 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
                     new_repos.push(SimpleRemoteRepository {
                         uuid: repo.uuid,
                         name: repo.name.into(),
+                        access_level: AccessLevel::Owner,
                         size: files.size(),
                         file_count: files.file_count(),
                     });
@@ -102,14 +103,14 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
                     .body("Failed to fetch owned repositories");
             }
         };
-    let accessible_repositories: Vec<(SimpleRemoteRepository, AccessLevel)> =
+    let accessible_repositories: Vec<SimpleRemoteRepository> =
         match cornucopia::queries::access::get_by_user()
             .bind(&transaction, &user.uuid)
             .all()
             .await
         {
             Ok(access) => {
-                let mut new_accessible_repos: Vec<(SimpleRemoteRepository, AccessLevel)> =
+                let mut new_accessible_repos: Vec<SimpleRemoteRepository> =
                     Vec::with_capacity(access.len());
                 for access_entry in access {
                     let repo = match cornucopia::queries::repository::get_by_uuid()
@@ -132,18 +133,16 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
                                 .body("Failed to parse file hashes");
                         }
                     };
-                    new_accessible_repos.push((
-                        SimpleRemoteRepository {
-                            uuid: repo.uuid,
-                            name: repo.name.into(),
-                            size: files.size(),
-                            file_count: files.file_count(),
-                        },
-                        access_entry
+                    new_accessible_repos.push(SimpleRemoteRepository {
+                        uuid: repo.uuid,
+                        name: repo.name.into(),
+                        access_level: access_entry
                             .access_level
                             .try_into()
                             .unwrap_or(AccessLevel::None),
-                    ));
+                        size: files.size(),
+                        file_count: files.file_count(),
+                    });
                 }
                 new_accessible_repos
             }
@@ -299,7 +298,7 @@ async fn repository(
         .one()
         .await
         .map(|repo| {
-            let files = match serde_json::from_value(repo.file_hashes) {
+            let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
                 Ok(files) => files,
                 Err(err) => {
                     log::error!("Failed to parse file hashes: {err}");
@@ -309,8 +308,10 @@ async fn repository(
             HttpResponse::Ok().json(RemoteRepository {
                 uuid: repo.uuid,
                 name: repo.name.into(),
-                files,
                 access_level,
+                size: files.size(),
+                file_count: files.file_count(),
+                files,
             })
         })
         .unwrap_or_else(|err| {
@@ -344,7 +345,7 @@ async fn repository_update(
         }
     };
 
-    if access_level < AccessLevel::Admin {
+    if access_level < AccessLevel::Owner {
         log::warn!(
             "User {} does not have admin access to repository {}",
             user.username,
@@ -412,7 +413,7 @@ async fn get_users_with_access(
         }
     };
 
-    if access_level < AccessLevel::Admin {
+    if access_level < AccessLevel::Owner {
         log::warn!(
             "User {} does not have admin access to repository {}",
             user.username,

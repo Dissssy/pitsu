@@ -261,7 +261,7 @@ pub struct Diff {
     pub change_type: ChangeType,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeType {
     OnServer,
     OnClient,
@@ -331,10 +331,14 @@ mod tests {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RemoteRepository {
+    // included in simple
     pub uuid: Uuid,
     pub name: Arc<str>,
-    pub files: RootFolder,
     pub access_level: AccessLevel,
+    pub size: u64,
+    pub file_count: usize,
+    // extra details
+    pub files: RootFolder,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -346,6 +350,7 @@ pub struct UpdateRemoteRepository {
 pub struct SimpleRemoteRepository {
     pub uuid: Uuid,
     pub name: Arc<str>,
+    pub access_level: AccessLevel,
     pub size: u64,
     pub file_count: usize,
 }
@@ -360,7 +365,7 @@ pub struct User {
 pub struct ThisUser {
     pub user: User,
     pub owned_repositories: Vec<SimpleRemoteRepository>,
-    pub accessible_repositories: Vec<(SimpleRemoteRepository, AccessLevel)>,
+    pub accessible_repositories: Vec<SimpleRemoteRepository>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,7 +373,7 @@ pub enum AccessLevel {
     None = 0,
     Read = 1,
     Write = 2,
-    Admin = 3,
+    Owner = 3,
 }
 
 impl TryFrom<&str> for AccessLevel {
@@ -379,7 +384,7 @@ impl TryFrom<&str> for AccessLevel {
             "N" => AccessLevel::None,
             "R" => AccessLevel::Read,
             "W" => AccessLevel::Write,
-            "RW+" => AccessLevel::Admin,
+            "O" => AccessLevel::Owner,
             _ => return Err(anyhow::anyhow!("Invalid access level: {}", s)),
         })
     }
@@ -391,7 +396,7 @@ impl std::fmt::Display for AccessLevel {
             AccessLevel::None => "N",
             AccessLevel::Read => "R",
             AccessLevel::Write => "W",
-            AccessLevel::Admin => "RW+",
+            AccessLevel::Owner => "RW+",
         };
         write!(f, "{level_str}")
     }

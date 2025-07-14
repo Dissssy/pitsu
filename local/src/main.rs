@@ -7,7 +7,10 @@ use eframe::egui::{self, FontData};
 use pitsu_lib::{AccessLevel, ChangeType, Diff};
 use uuid::Uuid;
 
-use crate::config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL};
+use crate::{
+    config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL},
+    pitignore::Pitignore,
+};
 mod cache;
 mod config;
 mod dialogue;
@@ -133,13 +136,15 @@ pub struct Repository {
     local: Arc<LocalRepository>,
     // remote: Arc<RemoteRepository>,
     diff: Arc<[Diff]>,
-    pitignore: Arc<pitignore::Pitignore>,
+    pitignore: Arc<Pitignore>,
 }
 
 pub struct App {
     cache: cache::RequestCache,
     ppp: f32,
     state: AppState,
+    edit_pitignore: Option<(Pitignore, EditState, bool)>,
+    sort: SortStates,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +152,12 @@ pub enum AppState {
     Main,
     RepositoryDetails { uuid: Uuid, hover_state: HoverType },
     EditPitignore { uuid: Uuid },
+}
+
+pub enum EditState {
+    None,
+    AddingPattern { pattern: String, negated: bool },
+    EditingPattern { index: usize },
 }
 
 impl eframe::App for App {
@@ -170,11 +181,15 @@ impl eframe::App for App {
                                 });
                             });
                         table.body(|mut body| {
-                            for (repo, access_level) in this
+                            // for (repo, access_level) in this
+                            //     .owned_repositories
+                            //     .iter()
+                            //     .map(|r| (r, AccessLevel::Owner))
+                            //     .chain(this.accessible_repositories.iter().map(|(r, al)| (r, *al)))
+                            for repo in this
                                 .owned_repositories
                                 .iter()
-                                .map(|r| (r, AccessLevel::Admin))
-                                .chain(this.accessible_repositories.iter().map(|(r, al)| (r, *al)))
+                                .chain(this.accessible_repositories.iter())
                             {
                                 body.row(20.0, |mut row| {
                                     row.col(|ui| {
@@ -192,7 +207,10 @@ impl eframe::App for App {
                                         };
                                     });
                                     row.col(|ui| {
-                                        ui.add(egui::Label::new(access_level.to_string()).extend());
+                                        ui.add(
+                                            egui::Label::new(repo.access_level.to_string())
+                                                .extend(),
+                                        );
                                     });
                                 });
                             }
@@ -228,11 +246,12 @@ impl eframe::App for App {
                     }
                 }
                 AppState::EditPitignore { uuid } => {
-                    if let Ok(Some(repo)) = self.cache.get_repository(uuid) {
-                        ui.label(format!("Edit pitignore for {}", repo.name));
-                    } else {
-                        ui.spinner();
-                    }
+                    ui.with_layout(
+                        egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
+                        |ui| {
+                            self.pitignore_editor(ui, uuid, &mut new_state);
+                        },
+                    );
                 }
             }
             if let Some(new_state) = new_state {
@@ -255,6 +274,8 @@ impl App {
                     .expect("Invalid UUID"),
                 hover_state: HoverType::None,
             },
+            edit_pitignore: None,
+            sort: SortStates::default(),
         }
     }
     fn header(
@@ -266,7 +287,7 @@ impl App {
         let go_back = match self.state {
             AppState::Main => None,
             AppState::RepositoryDetails { .. } => Some(AppState::Main),
-            AppState::EditPitignore { uuid } => Some(AppState::RepositoryDetails {
+            AppState::EditPitignore { uuid, .. } => Some(AppState::RepositoryDetails {
                 uuid,
                 hover_state: HoverType::None,
             }),
@@ -405,8 +426,19 @@ impl App {
                 }
                 AppState::EditPitignore { uuid } => {
                     if let Ok(Some(repo)) = self.cache.get_repository(uuid) {
-                        ui.label(format!("Edit pitignore for {}", repo.name));
-                    } else {
+                        ui.label(format!("Editing .pitignore for {}", repo.name));
+                        if let Some((_, _, dirty)) = self.edit_pitignore {
+                            if dirty {
+                                ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new(nerdfonts::SAVE).color(egui::Color32::LIGHT_GREEN),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                )
+                                .on_hover_text("Save changes to .pitignore");
+                            }
+                        }
+                    } else { // NOTE TO SELF TOO TIRED TO KEEP GOING BUT CHANGE THIS EDITING SHIT TO JUST PULL DIRECTLY OFF OF THE MUTABLE PITIGNORE INSTEAD OF ALL THIS FANCY SHIT LOL
                         ui.spinner();
                     }
                 }
@@ -509,7 +541,7 @@ impl App {
                     ui.with_layout(
                         egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
                         |ui| {
-                            self.repository_local_files(ui, stored_repo);
+                            self.repository_local_files(ui, stored_repo, hover_state);
                         },
                     );
                 }
@@ -556,7 +588,7 @@ impl App {
         );
     }
     fn repository_pitignore(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         stored_repo: &Repository,
         new_state: &mut Option<AppState>,
@@ -576,6 +608,8 @@ impl App {
                             .on_hover_text("Edit .pitignore")
                             .clicked()
                         {
+                            self.edit_pitignore =
+                                Some(((*stored_repo.pitignore).clone(), EditState::None, false));
                             *new_state = Some(AppState::EditPitignore {
                                 uuid: stored_repo.local.uuid,
                             });
@@ -586,7 +620,7 @@ impl App {
                     });
                 });
             table.body(|mut body| {
-                for pattern in &stored_repo.pitignore.patterns {
+                for (_index, pattern) in &stored_repo.pitignore.patterns {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
                             ui.add(
@@ -622,7 +656,7 @@ impl App {
         }
     }
     fn repository_diff(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         stored_repo: &Repository,
         hover_state: HoverType,
@@ -637,7 +671,7 @@ impl App {
         //     };
         //     ui.label(label);
         // }
-
+        // let mut sort_now = false;
         let table = egui_extras::TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -646,12 +680,75 @@ impl App {
             .column(egui_extras::Column::auto())
             .header(20.0, |mut header| {
                 header.col(|ui| {
-                    ui.add(egui::Label::new(nerdfonts::LOCATION).extend());
+                    // ui.add(egui::Label::new(nerdfonts::LOCATION).extend());
+                    if ui
+                        .button(egui::RichText::new(match self.sort.diff {
+                            DiffSort::OnClient => nerdfonts::SORT_BOOL_ASCENDING,
+                            DiffSort::OnServer => nerdfonts::SORT_BOOL_DESCENDING,
+                            _ => nerdfonts::LOCATION,
+                        }))
+                        .clicked()
+                    {
+                        self.sort.diff = match self.sort.diff {
+                            DiffSort::OnClient => DiffSort::OnServer,
+                            DiffSort::OnServer => DiffSort::OnClient,
+                            _ => DiffSort::OnServer,
+                        };
+                        // sort_now = true;
+                    }
                 });
                 header.col(|ui| {
-                    ui.add(egui::Label::new("Full Path").extend());
+                    // ui.add(egui::Label::new("Full Path").extend());
+                    if ui
+                        .button(egui::RichText::new(
+                            format!(
+                                "Full Path {}",
+                                match self.sort.diff {
+                                    DiffSort::Alphabetical =>
+                                        nerdfonts::SORT_ALPHABETICAL_ASCENDING,
+                                    DiffSort::AlphabeticalReverse =>
+                                        nerdfonts::SORT_ALPHABETICAL_DESCENDING,
+                                    _ => "",
+                                }
+                            )
+                            .trim(),
+                        ))
+                        .clicked()
+                    {
+                        self.sort.diff = match self.sort.diff {
+                            DiffSort::Alphabetical => DiffSort::AlphabeticalReverse,
+                            DiffSort::AlphabeticalReverse => DiffSort::Alphabetical,
+                            _ => DiffSort::Alphabetical,
+                        };
+                        // sort_now = true;
+                    }
                 });
             });
+        // if sort_now {
+        let mut diffs = stored_repo.diff.iter().cloned().collect::<Vec<_>>();
+        match self.sort.diff {
+            DiffSort::OnClient => {
+                diffs.sort_by(|a, b| match (a.change_type, b.change_type) {
+                    (ChangeType::OnClient, ChangeType::OnServer) => std::cmp::Ordering::Less,
+                    (ChangeType::OnServer, ChangeType::OnClient) => std::cmp::Ordering::Greater,
+                    _ => a.full_path.to_lowercase().cmp(&b.full_path.to_lowercase()),
+                });
+            }
+            DiffSort::OnServer => {
+                diffs.sort_by(|a, b| match (a.change_type, b.change_type) {
+                    (ChangeType::OnServer, ChangeType::OnClient) => std::cmp::Ordering::Less,
+                    (ChangeType::OnClient, ChangeType::OnServer) => std::cmp::Ordering::Greater,
+                    _ => a.full_path.to_lowercase().cmp(&b.full_path.to_lowercase()),
+                });
+            }
+            DiffSort::Alphabetical => {
+                diffs.sort_by(|a, b| a.full_path.to_lowercase().cmp(&b.full_path.to_lowercase()));
+            }
+            DiffSort::AlphabeticalReverse => {
+                diffs.sort_by(|a, b| b.full_path.to_lowercase().cmp(&a.full_path.to_lowercase()));
+            }
+        }
+        // }
         table.body(|mut body| {
             if local_empty {
                 let ui = body.ui_mut();
@@ -659,7 +756,7 @@ impl App {
             }
             let download = egui::RichText::new(nerdfonts::DOWNLOAD).color(egui::Color32::GREEN);
             let upload = egui::RichText::new(nerdfonts::UPLOAD).color(egui::Color32::YELLOW);
-            for diff in stored_repo.diff.iter() {
+            for diff in diffs.iter() {
                 body.row(20.0, |mut row| {
                     row.col(|ui| {
                         ui.add(
@@ -695,7 +792,12 @@ impl App {
             }
         });
     }
-    fn repository_local_files(&self, ui: &mut egui::Ui, stored_repo: &Repository) {
+    fn repository_local_files(
+        &mut self,
+        ui: &mut egui::Ui,
+        stored_repo: &Repository,
+        hover_state: HoverType,
+    ) {
         let table = egui_extras::TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -704,23 +806,112 @@ impl App {
             .column(egui_extras::Column::auto())
             .header(20.0, |mut header| {
                 header.col(|ui| {
-                    ui.add(egui::Label::new("Size").extend());
+                    // ui.add(egui::Label::new("Size").extend());
+                    if ui
+                        .button(egui::RichText::new(
+                            format!(
+                                "Size {}",
+                                match self.sort.local_files {
+                                    LocalSort::Size => nerdfonts::SORT_NUMERIC_ASCENDING,
+                                    LocalSort::SizeReverse => nerdfonts::SORT_NUMERIC_DESCENDING,
+                                    _ => "",
+                                }
+                            )
+                            .trim(),
+                        ))
+                        .clicked()
+                    {
+                        self.sort.local_files = match self.sort.local_files {
+                            LocalSort::Size => LocalSort::SizeReverse,
+                            LocalSort::SizeReverse => LocalSort::Size,
+                            _ => LocalSort::Size,
+                        };
+                    }
                 });
                 header.col(|ui| {
-                    ui.add(egui::Label::new("File Name").extend());
+                    // ui.add(egui::Label::new("File Name").extend());
+                    if ui
+                        .button(egui::RichText::new(format!(
+                            "File Name {}",
+                            match self.sort.local_files {
+                                LocalSort::Name => nerdfonts::SORT_ALPHABETICAL_ASCENDING,
+                                LocalSort::NameReverse => nerdfonts::SORT_ALPHABETICAL_DESCENDING,
+                                _ => "",
+                            }
+                        )))
+                        .clicked()
+                    {
+                        self.sort.local_files = match self.sort.local_files {
+                            LocalSort::Name => LocalSort::NameReverse,
+                            LocalSort::NameReverse => LocalSort::Name,
+                            _ => LocalSort::Name,
+                        };
+                    }
                 });
             });
+        // if sort_now {
+        let mut files = stored_repo.local.folder.files();
+        match self.sort.local_files {
+            LocalSort::Size => {
+                files.sort_by(|(_, size_a), (_, size_b)| size_a.cmp(size_b));
+            }
+            LocalSort::SizeReverse => {
+                files.sort_by(|(_, size_a), (_, size_b)| size_b.cmp(size_a));
+            }
+            LocalSort::Name => {
+                files.sort_by(|(name_a, _), (name_b, _)| {
+                    name_a.to_lowercase().cmp(&name_b.to_lowercase())
+                });
+            }
+            LocalSort::NameReverse => {
+                files.sort_by(|(name_a, _), (name_b, _)| {
+                    name_b.to_lowercase().cmp(&name_a.to_lowercase())
+                });
+            }
+        }
+        // }
+
         table.body(|mut body| {
             let ui = body.ui_mut();
             ui.set_width(ui.available_width());
-            for (name, size) in stored_repo.local.folder.files() {
+            for (name, size) in files {
                 body.row(20.0, |mut row| {
                     let (size, color) = readable_size_and_color(size);
+                    let will_be_deleted = {
+                        if hover_state == HoverType::SyncDown {
+                            stored_repo.diff.iter().any(|d| {
+                                d.full_path == name && d.change_type == ChangeType::OnClient
+                            })
+                        } else {
+                            false
+                        }
+                    };
                     row.col(|ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&*size).color(color)).extend());
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&*size).color(
+                                if will_be_deleted {
+                                    egui::Color32::RED
+                                } else {
+                                    color
+                                },
+                            ))
+                            .extend(),
+                        );
                     });
                     row.col(|ui| {
-                        ui.add(egui::Label::new(&*name).extend());
+                        // ui.add(egui::Label::new(&*name).extend());
+                        if will_be_deleted {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&*name)
+                                        .color(egui::Color32::RED)
+                                        .strikethrough(),
+                                )
+                                .extend(),
+                            );
+                        } else {
+                            ui.add(egui::Label::new(&*name).extend());
+                        }
                     });
                 });
             }
@@ -736,6 +927,184 @@ impl App {
                 dialogue::rfd_ok_dialogue(&format!("Failed to store repository:\n{e}")).ok();
             }
             self.cache.reload_repository(uuid);
+        }
+    }
+
+    fn pitignore_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        uuid: Uuid,
+        new_state: &mut Option<AppState>,
+    ) {
+        match self.edit_pitignore {
+            Some((ref mut pitignore, ref mut edit, ref mut dirty)) => {
+                let table = egui_extras::TableBuilder::new(ui)
+                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::auto())
+                    .column(egui_extras::Column::auto())
+                    .header(20.0, |mut header| {
+                        header.col(|ui| {
+                            ui.add(egui::Label::new(nerdfonts::TRASH).extend());
+                        });
+                        header.col(|ui| {
+                            ui.add(egui::Label::new(nerdfonts::DASH).extend());
+                        });
+                        header.col(|ui| {
+                            ui.add(egui::Label::new("Pattern").extend());
+                        });
+                    });
+                let mut new_edit_state = None;
+                match edit {
+                    EditState::None => {
+                        table.body(|mut body| {
+                            pitignore.patterns.retain_mut(|(index, p)| {
+                                let mut delete = false;
+                                body.row(20.0, |mut row| {
+                                    row.col(|ui| {
+                                        delete = ui
+                                            .add(egui::Button::new(
+                                                egui::RichText::new(nerdfonts::TRASH)
+                                                    .color(egui::Color32::RED),
+                                            ))
+                                            .on_hover_text("Delete this pattern")
+                                            .clicked();
+                                    });
+                                    row.col(|ui| {
+                                        let flip = if p.negated {
+                                            ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(nerdfonts::CHECK)
+                                                        .color(egui::Color32::LIGHT_GREEN),
+                                                )
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        } else {
+                                            ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(nerdfonts::BLOCKED)
+                                                        .color(egui::Color32::LIGHT_RED),
+                                                )
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        };
+                                        if flip {
+                                            *dirty = true;
+                                            p.negated = !p.negated;
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(&*p.pattern)
+                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        {
+                                            *dirty = true;
+                                            new_edit_state =
+                                                Some(EditState::EditingPattern { index: *index });
+                                        }
+                                    });
+                                });
+                                if delete {
+                                    *dirty = true;
+                                }
+                                !delete
+                            });
+                        });
+                    }
+                    EditState::AddingPattern { pattern, negated } => {
+                        todo!()
+                    }
+                    EditState::EditingPattern { index } => {
+                        table.body(|mut body| {
+                            pitignore.patterns.retain_mut(|(tindex, p)| {
+                                let mut delete = false;
+                                body.row(20.0, |mut row| {
+                                    row.col(|ui| {
+                                        delete = ui
+                                            .add_enabled(
+                                                index == tindex,
+                                                egui::Button::new(
+                                                    egui::RichText::new(nerdfonts::TRASH)
+                                                        .color(egui::Color32::RED),
+                                                ),
+                                            )
+                                            .on_hover_text("Delete this pattern")
+                                            .clicked();
+                                    });
+                                    row.col(|ui| {
+                                        let flip = if p.negated {
+                                            ui.add_enabled(
+                                                index == tindex,
+                                                egui::Button::new(
+                                                    egui::RichText::new(nerdfonts::CHECK)
+                                                        .color(egui::Color32::LIGHT_GREEN),
+                                                )
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        } else {
+                                            ui.add_enabled(
+                                                index == tindex,
+                                                egui::Button::new(
+                                                    egui::RichText::new(nerdfonts::BLOCKED)
+                                                        .color(egui::Color32::LIGHT_RED),
+                                                )
+                                                .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        };
+                                        if flip {
+                                            *dirty = true;
+                                            p.negated = !p.negated;
+                                        }
+                                    });
+                                    row.col(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                index == tindex,
+                                                egui::Button::new(&*p.pattern)
+                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                            )
+                                            .clicked()
+                                        {
+                                            *dirty = true;
+                                            new_edit_state =
+                                                Some(EditState::EditingPattern { index: *index });
+                                        }
+                                    });
+                                });
+                                if delete {
+                                    *dirty = true;
+                                    new_edit_state = Some(EditState::None);
+                                }
+                                !delete
+                            });
+                        });
+                    }
+                }
+                // if *dirty {
+                //     ui.add(
+                //         egui::Button::new(
+                //             egui::RichText::new(nerdfonts::SAVE).color(egui::Color32::LIGHT_GREEN),
+                //         )
+                //         .wrap_mode(egui::TextWrapMode::Extend),
+                //     )
+                //     .on_hover_text("Save changes to .pitignore");
+                // }
+                if let Some(new_edit_state) = new_edit_state {
+                    *edit = new_edit_state;
+                }
+            }
+            None => {
+                *new_state = Some(AppState::RepositoryDetails {
+                    uuid,
+                    hover_state: HoverType::None,
+                });
+            }
         }
     }
 }
@@ -757,19 +1126,36 @@ fn readable_size_and_color(bytes: u64) -> (Arc<str>, egui::Color32) {
         size /= 1024.0;
         index += 1;
     }
+    // let hsl = colors_transform::Hsl::from(
+    //     360.0 - ((((index as f32 / (SIZES.len() - 1) as f32) * 360.0) + 240.0) % 360.0),
+    //     100.0,
+    //     50.0,
+    // );
+    // like above but with smooth transition based on size / 1024.0
     let hsl = colors_transform::Hsl::from(
-        360.0 - ((((index as f32 / (SIZES.len() - 1) as f32) * 360.0) + 240.0) % 360.0),
+        {
+            360.0
+                - ((((index as f32 + size / 1024.0) / (SIZES.len() - 1) as f32) * 360.0 + 240.0)
+                    % 360.0)
+        },
         100.0,
         50.0,
     );
+
     let rgb = hsl.to_rgb();
 
     (
         Arc::from(format!(
             "{} {}",
-            format!("{size:.3}")
-                .trim_end_matches('0')
-                .trim_end_matches('.'),
+            if size >= 100.0 {
+                format!("{size:.0}")
+            } else if size >= 10.0 {
+                format!("{size:.1}")
+            } else {
+                format!("{size:.2}")
+            }
+            .trim_end_matches('0')
+            .trim_end_matches('.'),
             SIZES[index]
         )),
         egui::Color32::from_rgb(
@@ -778,4 +1164,35 @@ fn readable_size_and_color(bytes: u64) -> (Arc<str>, egui::Color32) {
             rgb.get_blue().round() as u8,
         ),
     )
+}
+
+struct SortStates {
+    diff: DiffSort,
+    local_files: LocalSort,
+}
+
+impl Default for SortStates {
+    fn default() -> Self {
+        Self {
+            diff: DiffSort::OnClient,
+            local_files: LocalSort::Name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSort {
+    OnClient, // Onclient, then Modified, then OnServer
+    // Modified,            // Modified, then OnClient, then OnServer
+    OnServer,            // OnServer, then Modified, then OnClient
+    Alphabetical,        // Sort alphabetically by full path
+    AlphabeticalReverse, // Sort alphabetically by full path in reverse
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalSort {
+    Name,        // Sort by name
+    NameReverse, // Sort by name in reverse
+    Size,        // Sort by size
+    SizeReverse, // Sort by size in reverse
 }
