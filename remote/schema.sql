@@ -19,7 +19,7 @@ CREATE TABLE Access (
     uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     repository_uuid UUID NOT NULL REFERENCES Repositories(uuid) ON DELETE CASCADE,
     user_uuid UUID NOT NULL REFERENCES Users(uuid) ON DELETE CASCADE,
-    access_level TEXT NOT NULL CHECK (access_level IN ('R', 'RW', 'RW+')),
+    access_level TEXT NOT NULL CHECK (access_level IN ('READ', 'WRITE', 'ADMIN')),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

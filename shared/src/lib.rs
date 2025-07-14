@@ -373,7 +373,8 @@ pub enum AccessLevel {
     None = 0,
     Read = 1,
     Write = 2,
-    Owner = 3,
+    Admin = 3,
+    Owner = 4,
 }
 
 impl TryFrom<&str> for AccessLevel {
@@ -381,10 +382,11 @@ impl TryFrom<&str> for AccessLevel {
 
     fn try_from(s: &str) -> Result<Self> {
         Ok(match s {
-            "N" => AccessLevel::None,
-            "R" => AccessLevel::Read,
-            "W" => AccessLevel::Write,
-            "O" => AccessLevel::Owner,
+            "NONE" => AccessLevel::None,
+            "READ" => AccessLevel::Read,
+            "WRITE" => AccessLevel::Write,
+            "ADMIN" => AccessLevel::Admin,
+            "OWNER" => AccessLevel::Owner,
             _ => return Err(anyhow::anyhow!("Invalid access level: {}", s)),
         })
     }
@@ -393,10 +395,11 @@ impl TryFrom<&str> for AccessLevel {
 impl std::fmt::Display for AccessLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let level_str = match self {
-            AccessLevel::None => "N",
-            AccessLevel::Read => "R",
-            AccessLevel::Write => "W",
-            AccessLevel::Owner => "RW+",
+            AccessLevel::None => "NONE",
+            AccessLevel::Read => "READ",
+            AccessLevel::Write => "WRITE",
+            AccessLevel::Admin => "ADMIN",
+            AccessLevel::Owner => "OWNER",
         };
         write!(f, "{level_str}")
     }
