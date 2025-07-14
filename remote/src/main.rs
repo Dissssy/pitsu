@@ -136,10 +136,7 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
                     new_accessible_repos.push(SimpleRemoteRepository {
                         uuid: repo.uuid,
                         name: repo.name.into(),
-                        access_level: access_entry
-                            .access_level
-                            .try_into()
-                            .unwrap_or(AccessLevel::None),
+                        access_level: Into::<AccessLevel>::into(access_entry.access_level),
                         size: files.size(),
                         file_count: files.file_count(),
                     });
@@ -445,14 +442,15 @@ async fn get_users_with_access(
         Ok(access_list) => {
             let mut users_with_access: Vec<UserWithAccess> = Vec::with_capacity(access_list.len());
             for access in access_list {
-                let Ok(access_level) = AccessLevel::try_from(access.access_level.as_str()) else {
-                    log::error!(
-                        "Invalid access level in database: {} for user {}",
-                        access.access_level,
-                        access.user_uuid
-                    );
-                    continue;
-                };
+                // let Ok(access_level) = AccessLevel::try_from(access.access_level.as_str()) else {
+                //     log::error!(
+                //         "Invalid access level in database: {} for user {}",
+                //         access.access_level,
+                //         access.user_uuid
+                //     );
+                //     continue;
+                // };
+                let access_level = Into::<AccessLevel>::into(access.access_level);
                 users_with_access.push(UserWithAccess {
                     user: User {
                         uuid: access.user_uuid,
@@ -1508,10 +1506,20 @@ pub async fn check_user_access(
         .one()
         .await
     {
-        Ok(access) => access.try_into().map_err(|_| {
-            actix_web::error::ErrorInternalServerError("Failed to parse access level")
-        }),
+        Ok(access) => Ok(Into::<AccessLevel>::into(access)),
         Err(_) => Err(actix_web::error::ErrorForbidden("Access denied")),
+    }
+}
+
+impl Into<AccessLevel> for cornucopia::types::public::AccessLevel {
+    fn into(self) -> AccessLevel {
+        match self {
+            cornucopia::types::public::AccessLevel::NONE => AccessLevel::None,
+            cornucopia::types::public::AccessLevel::READ => AccessLevel::Read,
+            cornucopia::types::public::AccessLevel::WRITE => AccessLevel::Write,
+            cornucopia::types::public::AccessLevel::ADMIN => AccessLevel::Admin,
+            cornucopia::types::public::AccessLevel::OWNER => AccessLevel::Owner,
+        }
     }
 }
 
