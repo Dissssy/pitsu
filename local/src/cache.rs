@@ -19,6 +19,7 @@ pub struct RequestCache {
     upload: Option<PendingRequest<Uuid>>,
     download: Option<PendingRequest<Uuid>>,
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
+    remote_update_bytes: Option<PendingRequest<Arc<[u8]>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
     user_action: Option<PendingRequest<Uuid>>,
@@ -54,6 +55,7 @@ impl RequestCache {
             upload: None,
             download: None,
             remote_version_number: None,
+            remote_update_bytes: None,
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
             user_action: None,
@@ -141,6 +143,59 @@ impl RequestCache {
             }
         };
         self.remote_version_number = Some(new_state);
+        Ok(None)
+    }
+    pub fn remote_update_bytes(&mut self, only_check: bool) -> PendingResponse<Arc<[u8]>> {
+        let new_state = match &self.remote_update_bytes {
+            None => {
+                if only_check {
+                    return Ok(None);
+                }
+                let (sender, receiver) = mpsc::channel();
+                ehttp::fetch(
+                    get_request(&format!("{PUBLIC_URL}/api/local/update")),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 200 {
+                            sender
+                                .send(Err(Arc::from(format!("Failed to fetch update: {}", response.status))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        let file = response.bytes;
+                        sender.send(Ok(file.into())).unwrap_or_else(|e| {
+                            log::error!("Failed to send update file: {e}");
+                        });
+                    },
+                );
+                PendingRequest::Pending(receiver)
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => PendingRequest::Response(result),
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
+                }
+            },
+            Some(PendingRequest::Response(ref result)) => {
+                return result.clone().map(Some);
+            }
+        };
+        self.remote_update_bytes = Some(new_state);
         Ok(None)
     }
     pub fn this_user(&mut self) -> PendingResponse<Arc<ThisUser>> {

@@ -6,6 +6,7 @@ use std::sync::{mpsc, Arc};
 use colors_transform::Color;
 use eframe::egui::{self, FontData, Id};
 use pitsu_lib::{AccessLevel, ChangeType, Diff, Pitignore, UserWithAccess};
+use self_update::self_replace;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,68 +19,68 @@ mod nerdfonts;
 fn main() -> anyhow::Result<()> {
     config::setup();
     // if the program is run with the --update flag, we will update the application at this point. we need to get the old file location which will be "pitsu.exe" in the folder where the executable is located.
-    if std::env::args().any(|arg| arg == "--update") {
-        let this_exe = std::env::current_exe().expect("Failed to get current executable path");
-        let new_exe = this_exe.with_file_name("pitsu.exe");
-        let (update_sender, update_receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
-        ehttp::fetch(
-            get_request(&format!("{PUBLIC_URL}/api/local/update")),
-            move |response| {
-                let response = match response {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        update_sender
-                            .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
-                            .unwrap_or_else(|e| {
-                                log::error!("Failed to send error response: {e}");
-                            });
-                        return;
-                    }
-                };
-                if response.status != 200 {
-                    update_sender
-                        .send(Err(Arc::from(format!("Failed to fetch update: {}", response.status))))
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to send error response: {e}");
-                        });
-                    return;
-                }
-                let file = response.bytes;
-                update_sender.send(Ok(file.into())).unwrap_or_else(|e| {
-                    log::error!("Failed to send update file: {e}");
-                });
-            },
-        );
-        let update = update_receiver.recv().expect("Failed to receive update file");
-        let update = match update {
-            Ok(file) => file,
-            Err(e) => {
-                log::error!("Failed to fetch update: {e}");
-                return Err(anyhow::anyhow!("Failed to fetch update: {e}"));
-            }
-        };
-        // Delete the "old" pitsu.exe if it exists, wait a sec for it to exit just in case
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        if new_exe.exists() {
-            std::fs::remove_file(&new_exe).expect("Failed to remove old pitsu.exe");
-        }
-        // Write the update to pitsu.exe
-        std::fs::write(&new_exe, &*update).expect("Failed to write update file to pitsu.exe");
-        // run pitsu.exe
-        #[allow(clippy::zombie_processes)]
-        std::process::Command::new(new_exe)
-            .spawn()
-            .expect("Failed to spawn new Pitsu process");
-        return Ok(());
-    } else {
-        // If this is not an update, delete the temporary update file if it exists
-        let temp_update_file = std::env::current_exe()
-            .expect("Failed to get current executable path")
-            .with_file_name("pitsu_old.exe");
-        if temp_update_file.exists() {
-            std::fs::remove_file(temp_update_file).expect("Failed to remove temporary update file");
-        }
-    }
+    // if std::env::args().any(|arg| arg == "--update") {
+    //     let this_exe = std::env::current_exe().expect("Failed to get current executable path");
+    //     let new_exe = this_exe.with_file_name("pitsu.exe");
+    //     let (update_sender, update_receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
+    //     ehttp::fetch(
+    //         get_request(&format!("{PUBLIC_URL}/api/local/update")),
+    //         move |response| {
+    //             let response = match response {
+    //                 Ok(resp) => resp,
+    //                 Err(e) => {
+    //                     update_sender
+    //                         .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
+    //                         .unwrap_or_else(|e| {
+    //                             log::error!("Failed to send error response: {e}");
+    //                         });
+    //                     return;
+    //                 }
+    //             };
+    //             if response.status != 200 {
+    //                 update_sender
+    //                     .send(Err(Arc::from(format!("Failed to fetch update: {}", response.status))))
+    //                     .unwrap_or_else(|e| {
+    //                         log::error!("Failed to send error response: {e}");
+    //                     });
+    //                 return;
+    //             }
+    //             let file = response.bytes;
+    //             update_sender.send(Ok(file.into())).unwrap_or_else(|e| {
+    //                 log::error!("Failed to send update file: {e}");
+    //             });
+    //         },
+    //     );
+    //     let update = update_receiver.recv().expect("Failed to receive update file");
+    //     let update = match update {
+    //         Ok(file) => file,
+    //         Err(e) => {
+    //             log::error!("Failed to fetch update: {e}");
+    //             return Err(anyhow::anyhow!("Failed to fetch update: {e}"));
+    //         }
+    //     };
+    //     // Delete the "old" pitsu.exe if it exists, wait a sec for it to exit just in case
+    //     std::thread::sleep(std::time::Duration::from_secs(1));
+    //     if new_exe.exists() {
+    //         std::fs::remove_file(&new_exe).expect("Failed to remove old pitsu.exe");
+    //     }
+    //     // Write the update to pitsu.exe
+    //     std::fs::write(&new_exe, &*update).expect("Failed to write update file to pitsu.exe");
+    //     // run pitsu.exe
+    //     #[allow(clippy::zombie_processes)]
+    //     std::process::Command::new(new_exe)
+    //         .spawn()
+    //         .expect("Failed to spawn new Pitsu process");
+    //     return Ok(());
+    // } else {
+    //     // If this is not an update, delete the temporary update file if it exists
+    //     let temp_update_file = std::env::current_exe()
+    //         .expect("Failed to get current executable path")
+    //         .with_file_name("pitsu_old.exe");
+    //     if temp_update_file.exists() {
+    //         std::fs::remove_file(temp_update_file).expect("Failed to remove temporary update file");
+    //     }
+    // }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder {
@@ -151,6 +152,7 @@ pub struct App {
     edit_pitignore: Option<(Pitignore, EditState, bool)>,
     add_user_text: String,
     add_user_modal: bool,
+    updating: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,22 @@ pub enum EditState {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        match self.long_running.remote_update_bytes(true) {
+            Ok(Some(bytes)) => self_update(bytes.to_vec()).expect("Failed to update Pitsu"),
+            Ok(None) => {
+                // No update bytes available
+            }
+            Err(e) => {
+                log::error!("Failed to fetch update bytes: {e}");
+            }
+        }
+        if self.updating {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.label("Updating PITSU...");
+                ui.spinner();
+            });
+            return;
+        }
         match self.long_running.resolve_user_action() {
             Ok(Some(uuid)) => {
                 self.long_running
@@ -314,6 +332,7 @@ impl App {
             sort: SortStates::default(),
             add_user_text: String::new(),
             add_user_modal: false,
+            updating: false,
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
@@ -744,19 +763,25 @@ impl App {
                     .on_hover_text("Update Pitsu to the latest version")
                     .clicked()
             {
-                // Copy the executable to pitsu_old.exe
-                let this_exe = std::env::current_exe().expect("Failed to get current executable path");
-                let old_exe = this_exe.with_file_name("pitsu_old.exe");
-                std::fs::copy(&this_exe, &old_exe).unwrap_or_else(|e| {
-                    log::error!("Failed to create backup copy: {e}");
-                    0
-                });
-                // Run that with --update
-                std::process::Command::new(&this_exe)
-                    .arg("--update")
-                    .spawn()
-                    .expect("Failed to spawn update process");
-                std::process::exit(0);
+                // // Copy the executable to pitsu_old.exe
+                // let this_exe = std::env::current_exe().expect("Failed to get current executable path");
+                // let old_exe = this_exe.with_file_name("pitsu_old.exe");
+                // std::fs::copy(&this_exe, &old_exe).unwrap_or_else(|e| {
+                //     log::error!("Failed to create backup copy: {e}");
+                //     0
+                // });
+                // // Run that with --update
+                // // std::process::Command::new(&this_exe)
+                // //     .arg("--update")
+                // //     .spawn()
+                // //     .expect("Failed to spawn update process");
+                // std::process::Child::spawn()
+                //     .arg(&this_exe)
+                //     .arg("--update")
+                //     .spawn()
+                //     .expect("Failed to spawn update process");
+                // std::process::exit(0);
+                self.long_running.remote_update_bytes(false).ok();
             }
         } else {
             ui.spinner();
@@ -1426,4 +1451,17 @@ pub enum LocalSort {
     NameReverse, // Sort by name in reverse
     Size,        // Sort by size
     SizeReverse, // Sort by size in reverse
+}
+
+fn self_update(bytes: Vec<u8>) -> Result<(), anyhow::Error> {
+    let tmp_dir = dirs::cache_dir()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get cache directory"))?
+        .join("pitsu_update");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| anyhow::anyhow!("Failed to create temporary directory: {e}"))?;
+    let new_exe = tmp_dir.join("pitsu.exe");
+    std::fs::write(&new_exe, bytes).map_err(|e| anyhow::anyhow!("Failed to write new executable: {e}"))?;
+    log::info!("New executable written to {}", new_exe.display());
+    self_replace::self_replace(new_exe).map_err(|e| anyhow::anyhow!("Failed to replace current executable: {e}"))?;
+    log::info!("Successfully replaced current executable. Restarting PITSU...");
+    Ok(())
 }
