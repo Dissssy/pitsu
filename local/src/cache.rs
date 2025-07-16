@@ -3,7 +3,7 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, VersionNumber};
+use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, User, VersionNumber};
 use uuid::Uuid;
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
 
 pub struct RequestCache {
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
+    users: Option<PendingRequest<Vec<User>>>,
     upload: Option<PendingRequest<Uuid>>,
     download: Option<PendingRequest<Uuid>>,
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
@@ -47,6 +48,7 @@ impl RequestCache {
     pub fn new() -> Self {
         RequestCache {
             this_user: None,
+            users: None,
             upload: None,
             download: None,
             remote_version_number: None,
@@ -194,6 +196,64 @@ impl RequestCache {
             }
         };
         self.this_user = Some(new_state);
+        Ok(None)
+    }
+    pub fn all_users(&mut self) -> PendingResponse<Vec<User>> {
+        let new_state = match &self.users {
+            None => {
+                let (sender, receiver) = mpsc::channel();
+                ehttp::fetch(get_request(&format!("{PUBLIC_URL}/api/users")), move |response| {
+                    let response = match response {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            sender
+                                .send(Err(Arc::from(format!("Failed to fetch users: {e}"))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                    };
+                    if response.status != 200 {
+                        sender
+                            .send(Err(Arc::from(format!("Failed to fetch users: {}", response.status))))
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to send error response: {e}");
+                            });
+                        return;
+                    }
+                    let users: Result<Vec<User>, _> = response.json();
+                    match users {
+                        Ok(users) => {
+                            sender.send(Ok(users)).unwrap_or_else(|e| {
+                                log::error!("Failed to send users response: {e}");
+                            });
+                        }
+                        Err(e) => {
+                            sender
+                                .send(Err(Arc::from(format!("Failed to parse users: {e}"))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                        }
+                    }
+                });
+                PendingRequest::Pending(receiver)
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => PendingRequest::Response(result),
+                Err(mpsc::TryRecvError::Empty) => {
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
+                }
+            },
+            Some(PendingRequest::Response(ref result)) => {
+                return result.clone().map(Some);
+            }
+        };
+        self.users = Some(new_state);
         Ok(None)
     }
     pub fn get_repository(&mut self, uuid: Uuid) -> PendingResponse<Arc<RemoteRepository>> {

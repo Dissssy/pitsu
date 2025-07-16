@@ -4,8 +4,8 @@
 use std::sync::{mpsc, Arc};
 
 use colors_transform::Color;
-use eframe::egui::{self, FontData};
-use pitsu_lib::{AccessLevel, ChangeType, Diff};
+use eframe::egui::{self, FontData, Id};
+use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -150,6 +150,8 @@ pub struct App {
     state_stack: Vec<AppState>,
     sort: SortStates,
     edit_pitignore: Option<(Pitignore, EditState, bool)>,
+    add_user_text: String,
+    add_user_modal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,9 +292,36 @@ impl App {
             state_stack: Vec::new(),
             edit_pitignore: None,
             sort: SortStates::default(),
+            add_user_text: String::new(),
+            add_user_modal: true,
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
+        if self.add_user_modal {
+            let modal = egui::Modal::new(Id::new("add_user_modal")).show(ctx, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.label("Add User to Repository");
+                });
+                ui.text_edit_singleline(&mut self.add_user_text);
+                match self.long_running.all_users() {
+                    Ok(Some(users)) => {
+                        for user in users {
+                            ui.label(format!("{}", user.username));
+                        }
+                    }
+                    Ok(None) => {
+                        ui.spinner();
+                    }
+                    Err(e) => {
+                        ui.label(format!("Error fetching users: {e}"));
+                    }
+                }
+            });
+            if modal.backdrop_response.clicked() {
+                self.add_user_modal = false;
+                self.add_user_text.clear();
+            }
+        }
         if let Ok(Some(uuid)) = self.long_running.any_sync_response() {
             self.long_running
                 .reload_repository(uuid)
@@ -337,6 +366,72 @@ impl App {
                     new_hover_state = hover_state;
                     if let Some(repo) = self.long_running.get_repository(uuid).unwrap_or(None) {
                         ui.label(format!("{}", repo.name));
+                        if ui
+                            .menu_button(nerdfonts::ACCOUNT, |ui| {
+                                let is_admin = repo.access_level >= AccessLevel::Admin;
+                                let table = {
+                                    let mut table = egui_extras::TableBuilder::new(ui)
+                                        .striped(false)
+                                        .resizable(false)
+                                        .column(egui_extras::Column::auto())
+                                        .column(egui_extras::Column::auto())
+                                        .id_salt("repository_access");
+                                    if is_admin {
+                                        table = table.column(egui_extras::Column::auto());
+                                    }
+                                    table.header(20.0, |mut header| {
+                                        if is_admin {
+                                            header.col(|ui| {
+                                                ui.add(egui::Label::new(nerdfonts::ACCOUNT).extend());
+                                            });
+                                        }
+                                        header.col(|ui| {
+                                            ui.add(egui::Label::new("Name").extend());
+                                        });
+                                        header.col(|ui| {
+                                            ui.add(egui::Label::new("Access").extend());
+                                        });
+                                    })
+                                };
+                                table.body(|mut body| {
+                                    for user in &repo.users {
+                                        body.row(20.0, |mut row| {
+                                            if is_admin {
+                                                row.col(|ui: &mut egui::Ui| {
+                                                    if ui
+                                                        .button(nerdfonts::ACCOUNT_MINUS)
+                                                        .on_hover_text("Remove user")
+                                                        .clicked()
+                                                    {
+                                                        todo!("Remove user functionality not implemented yet");
+                                                    }
+                                                });
+                                            }
+                                            row.col(|ui| {
+                                                ui.add(egui::Label::new(&*user.user.username).extend());
+                                            });
+                                            row.col(|ui| {
+                                                ui.add(egui::Label::new(format!("{:?}", user.access_level)).extend());
+                                            });
+                                        });
+                                    }
+                                });
+                                ui.centered_and_justified(|ui| {
+                                    ui.set_height(20.0);
+                                    if ui
+                                        .button(nerdfonts::ACCOUNT_PLUS)
+                                        .on_hover_text("Add user to repository")
+                                        .clicked()
+                                    {
+                                        self.add_user_modal = true;
+                                    };
+                                });
+                            })
+                            .response
+                            .clicked()
+                        {
+                            self.add_user_text.clear();
+                        };
                         if let Some(stored) = self
                             .long_running
                             .get_stored_repository(uuid, &repo)

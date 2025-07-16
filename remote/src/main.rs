@@ -195,7 +195,7 @@ async fn get_other(
     }
 }
 
-#[get("/api/user/")]
+#[get("/api/users")]
 async fn get_all_users(pool: Data<Pool>) -> impl Responder {
     let pool = pool.into_inner();
     let mut _connection = match pool.get().await {
