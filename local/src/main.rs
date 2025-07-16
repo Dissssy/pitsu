@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc};
 
 use colors_transform::Color;
 use eframe::egui::{self, FontData, Id};
-use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository};
+use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository, UserWithAccess};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -368,7 +368,13 @@ impl App {
                                             }
                                             if button.clicked() {
                                                 ui.close();
-                                                self.long_running.add_user_to_repository(uuid, user.uuid);
+                                                self.long_running.add_user_to_repository(
+                                                    uuid,
+                                                    UserWithAccess {
+                                                        user: user.clone(),
+                                                        access_level: AccessLevel::Read,
+                                                    },
+                                                );
                                             }
                                         });
                                     }

@@ -3,7 +3,7 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, User, VersionNumber};
+use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, User, UserWithAccess, VersionNumber};
 use uuid::Uuid;
 
 use crate::{
@@ -477,11 +477,11 @@ impl RequestCache {
         // if neither upload nor download have a response, return Ok(None)
         Ok(None)
     }
-    pub fn add_user_to_repository(&self, repository_uuid: Uuid, user_uuid: Uuid) {
+    pub fn add_user_to_repository(&self, repository_uuid: Uuid, user: UserWithAccess) {
         ehttp::fetch(
             post_request(
                 &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
-                serde_json::to_value(user_uuid).expect("Failed to serialize user UUID"),
+                serde_json::to_value(user).expect("Failed to serialize user"),
             ),
             move |response| {
                 let response = match response {

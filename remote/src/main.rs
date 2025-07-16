@@ -60,14 +60,14 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
             return HttpResponse::Unauthorized().body("Unauthorized");
         }
     };
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -167,14 +167,14 @@ async fn get_other(
         }
     };
     let uuid = uuid.into_inner();
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -201,14 +201,14 @@ async fn get_other(
 #[get("/api/users")]
 async fn get_all_users(pool: Data<Pool>) -> impl Responder {
     let pool = pool.into_inner();
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -263,14 +263,14 @@ async fn repository(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -361,14 +361,14 @@ async fn repository_update(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -429,14 +429,14 @@ async fn get_users_with_access(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -512,14 +512,14 @@ async fn set_access_level(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -527,14 +527,19 @@ async fn set_access_level(
         }
     };
 
-    match cornucopia::queries::access::create()
+    if let Err(err) = cornucopia::queries::access::create()
         .bind(&transaction, &uuid, &body.user.uuid, &body.access_level.into())
         .await
     {
-        Ok(_) => HttpResponse::Ok().body("Access level updated"),
+        log::error!("Failed to update access level: {err}");
+        return HttpResponse::InternalServerError().body("Failed to update access level");
+    }
+
+    match transaction.commit().await {
+        Ok(_) => HttpResponse::Ok().body("Access level updated successfully"),
         Err(err) => {
-            log::error!("Failed to update access level: {err}");
-            HttpResponse::InternalServerError().body("Failed to update access level")
+            log::error!("Failed to commit transaction: {err}");
+            HttpResponse::InternalServerError().body("Failed to commit changes")
         }
     }
 }
@@ -573,14 +578,14 @@ async fn remove_user_access(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -588,15 +593,19 @@ async fn remove_user_access(
         }
     };
 
-    match cornucopia::queries::access::delete_by_user_uuid_and_repository_uuid()
+    if let Err(err) = cornucopia::queries::access::delete_by_user_uuid_and_repository_uuid()
         .bind(&transaction, &body.0, &uuid)
         .one()
         .await
     {
-        Ok(_) => HttpResponse::Ok().body("Access level removed"),
+        log::error!("Failed to remove access level: {err}");
+        return HttpResponse::InternalServerError().body("Failed to remove access level");
+    }
+    match transaction.commit().await {
+        Ok(_) => HttpResponse::Ok().body("Access level removed successfully"),
         Err(err) => {
-            log::error!("Failed to remove access level: {err}");
-            HttpResponse::InternalServerError().body("Failed to remove access level")
+            log::error!("Failed to commit transaction: {err}");
+            HttpResponse::InternalServerError().body("Failed to commit changes")
         }
     }
 }
@@ -630,14 +639,14 @@ async fn repository_path(
         return HttpResponse::Forbidden().body("Access denied");
     }
 
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -728,14 +737,14 @@ async fn upload_file(
         );
         return HttpResponse::Forbidden().body("Access denied");
     }
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
@@ -864,14 +873,14 @@ async fn delete_file(
         );
         return HttpResponse::Forbidden().body("Access denied");
     }
-    let mut _connection = match pool.get().await {
+    let mut connection = match pool.get().await {
         Ok(conn) => conn,
         Err(err) => {
             log::error!("Failed to get database connection: {err}");
             return HttpResponse::InternalServerError().body("Database connection error");
         }
     };
-    let transaction = match _connection.transaction().await {
+    let transaction = match connection.transaction().await {
         Ok(tx) => tx,
         Err(err) => {
             log::error!("Failed to start transaction: {err}");
