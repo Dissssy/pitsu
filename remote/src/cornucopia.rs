@@ -337,7 +337,52 @@ repository_uuid: &'a uuid::Uuid,) -> GetAllUsersWithAccessQuery<'a,C, GetAllUser
         |row| { GetAllUsersWithAccessBorrowed { user_uuid: row.get(0),access_level: row.get(1),username: row.get(2),} }, mapper: |it| { <GetAllUsersWithAccess>::from(it) },
     }
 } }}pub mod repository
-{ use futures::{{StreamExt, TryStreamExt}};use futures; use cornucopia_async::GenericClient;#[derive( Debug)] pub struct CreateParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub owner_uuid: uuid::Uuid,}#[derive( Debug)] pub struct GetByNameAndOwnerParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub owner_uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateFileHashesByUuidParams<T1: cornucopia_async::JsonSql,> { pub file_hashes: T1,pub uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateMetadataByUuidParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub uuid: uuid::Uuid,}#[derive( Debug, Clone, PartialEq,)] pub struct DeleteByUuid
+{ use futures::{{StreamExt, TryStreamExt}};use futures; use cornucopia_async::GenericClient;#[derive( Debug)] pub struct CreateParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub owner_uuid: uuid::Uuid,}#[derive( Debug)] pub struct GetByNameAndOwnerParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub owner_uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateFileHashesByUuidParams<T1: cornucopia_async::JsonSql,> { pub file_hashes: T1,pub uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateMetadataByUuidParams<T1: cornucopia_async::StringSql,> { pub name: T1,pub uuid: uuid::Uuid,}#[derive( Debug, Clone, PartialEq,)] pub struct Create
+{ pub uuid : uuid::Uuid,pub name : String,pub owner_uuid : uuid::Uuid,pub file_hashes : serde_json::Value,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct CreateBorrowed<'a> { pub uuid : uuid::Uuid,pub name : &'a str,pub owner_uuid : uuid::Uuid,pub file_hashes : postgres_types::Json<&'a serde_json::value::RawValue>,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
+impl<'a> From<CreateBorrowed<'a>> for Create
+{
+    fn from(CreateBorrowed { uuid,name,owner_uuid,file_hashes,created_at,updated_at,}: CreateBorrowed<'a>) -> Self
+    { Self { uuid,name: name.into(),owner_uuid,file_hashes: serde_json::from_str(file_hashes.0.get()).unwrap(),created_at,updated_at,} }
+}pub struct CreateQuery<'a, C: GenericClient, T, const N: usize>
+{
+    client: &'a  C, params:
+    [&'a (dyn postgres_types::ToSql + Sync); N], stmt: &'a mut
+    cornucopia_async::private::Stmt, extractor: fn(&tokio_postgres::Row) -> CreateBorrowed,
+    mapper: fn(CreateBorrowed) -> T,
+} impl<'a, C, T:'a, const N: usize> CreateQuery<'a, C, T, N> where C:
+GenericClient
+{
+    pub fn map<R>(self, mapper: fn(CreateBorrowed) -> R) ->
+    CreateQuery<'a,C,R,N>
+    {
+        CreateQuery
+        {
+            client: self.client, params: self.params, stmt: self.stmt,
+            extractor: self.extractor, mapper,
+        }
+    } pub async fn one(self) -> Result<T, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?; let row =
+        self.client.query_one(stmt, &self.params).await?;
+        Ok((self.mapper)((self.extractor)(&row)))
+    } pub async fn all(self) -> Result<Vec<T>, tokio_postgres::Error>
+    { self.iter().await?.try_collect().await } pub async fn opt(self) ->
+    Result<Option<T>, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?;
+        Ok(self.client.query_opt(stmt, &self.params) .await?
+        .map(|row| (self.mapper)((self.extractor)(&row))))
+    } pub async fn iter(self,) -> Result<impl futures::Stream<Item = Result<T,
+    tokio_postgres::Error>> + 'a, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?; let it =
+        self.client.query_raw(stmt,
+        cornucopia_async::private::slice_iter(&self.params)) .await?
+        .map(move |res|
+        res.map(|row| (self.mapper)((self.extractor)(&row)))) .into_stream();
+        Ok(it)
+    }
+}#[derive( Debug, Clone, PartialEq,)] pub struct DeleteByUuid
 { pub uuid : uuid::Uuid,pub name : String,pub owner_uuid : uuid::Uuid,pub file_hashes : serde_json::Value,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct DeleteByUuidBorrowed<'a> { pub uuid : uuid::Uuid,pub name : &'a str,pub owner_uuid : uuid::Uuid,pub file_hashes : postgres_types::Json<&'a serde_json::value::RawValue>,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
 impl<'a> From<DeleteByUuidBorrowed<'a>> for DeleteByUuid
 {
@@ -654,24 +699,29 @@ GenericClient
     }
 }pub fn create() -> CreateStmt
 { CreateStmt(cornucopia_async::private::Stmt::new("INSERT INTO Repositories (name, owner_uuid)
-    VALUES ($1, $2)")) } pub struct
+    VALUES ($1, $2)
+    RETURNING *")) } pub struct
 CreateStmt(cornucopia_async::private::Stmt); impl CreateStmt
-{ pub async fn bind<'a, C:
+{ pub fn bind<'a, C:
 GenericClient,T1:
 cornucopia_async::StringSql,>(&'a mut self, client: &'a  C,
-name: &'a T1,owner_uuid: &'a uuid::Uuid,) -> Result<u64, tokio_postgres::Error>
+name: &'a T1,owner_uuid: &'a uuid::Uuid,) -> CreateQuery<'a,C, Create,
+2>
 {
-    let stmt = self.0.prepare(client).await?;
-    client.execute(stmt, &[name,owner_uuid,]).await
-} }impl <'a, C: GenericClient + Send + Sync, T1: cornucopia_async::StringSql,>
-cornucopia_async::Params<'a, CreateParams<T1,>, std::pin::Pin<Box<dyn futures::Future<Output = Result<u64,
-tokio_postgres::Error>> + Send + 'a>>, C> for CreateStmt
+    CreateQuery
+    {
+        client, params: [name,owner_uuid,], stmt: &mut self.0, extractor:
+        |row| { CreateBorrowed { uuid: row.get(0),name: row.get(1),owner_uuid: row.get(2),file_hashes: row.get(3),created_at: row.get(4),updated_at: row.get(5),} }, mapper: |it| { <Create>::from(it) },
+    }
+} }impl <'a, C: GenericClient,T1: cornucopia_async::StringSql,> cornucopia_async::Params<'a,
+CreateParams<T1,>, CreateQuery<'a, C, Create,
+2>, C> for CreateStmt
 {
     fn
     params(&'a mut self, client: &'a  C, params: &'a
-    CreateParams<T1,>) -> std::pin::Pin<Box<dyn futures::Future<Output = Result<u64,
-    tokio_postgres::Error>> + Send + 'a>>
-    { Box::pin(self.bind(client, &params.name,&params.owner_uuid,)) }
+    CreateParams<T1,>) -> CreateQuery<'a, C,
+    Create, 2>
+    { self.bind(client, &params.name,&params.owner_uuid,) }
 }pub fn delete_by_uuid() -> DeleteByUuidStmt
 { DeleteByUuidStmt(cornucopia_async::private::Stmt::new("DELETE FROM Repositories
     WHERE uuid = $1
