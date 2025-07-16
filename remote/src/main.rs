@@ -14,9 +14,8 @@ mod cornucopia;
 use deadpool_postgres::Pool;
 use pitsu_lib::{
     anyhow::{self, Result},
-    decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload,
-    RemoteRepository, RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User,
-    UserWithAccess, VersionNumber,
+    decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, RemoteRepository,
+    RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess, VersionNumber,
 };
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -70,85 +69,77 @@ async fn get_self(req: actix_web::HttpRequest, pool: Data<Pool>) -> impl Respond
             return HttpResponse::InternalServerError().body("Transaction error");
         }
     };
-    let owned_repositories: Vec<SimpleRemoteRepository> =
-        match cornucopia::queries::repository::get_by_owner()
-            .bind(&transaction, &user.uuid)
-            .all()
-            .await
-        {
-            Ok(repos) => {
-                let mut new_repos: Vec<SimpleRemoteRepository> = Vec::with_capacity(repos.len());
-                for repo in repos {
-                    let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
-                        Ok(files) => files,
-                        Err(err) => {
-                            log::error!("Failed to parse file hashes: {err}");
-                            return HttpResponse::InternalServerError()
-                                .body("Failed to parse file hashes");
-                        }
-                    };
-                    new_repos.push(SimpleRemoteRepository {
-                        uuid: repo.uuid,
-                        name: repo.name.into(),
-                        access_level: AccessLevel::Owner,
-                        size: files.size(),
-                        file_count: files.file_count(),
-                    });
-                }
-                new_repos
+    let owned_repositories: Vec<SimpleRemoteRepository> = match cornucopia::queries::repository::get_by_owner()
+        .bind(&transaction, &user.uuid)
+        .all()
+        .await
+    {
+        Ok(repos) => {
+            let mut new_repos: Vec<SimpleRemoteRepository> = Vec::with_capacity(repos.len());
+            for repo in repos {
+                let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
+                    Ok(files) => files,
+                    Err(err) => {
+                        log::error!("Failed to parse file hashes: {err}");
+                        return HttpResponse::InternalServerError().body("Failed to parse file hashes");
+                    }
+                };
+                new_repos.push(SimpleRemoteRepository {
+                    uuid: repo.uuid,
+                    name: repo.name.into(),
+                    access_level: AccessLevel::Owner,
+                    size: files.size(),
+                    file_count: files.file_count(),
+                });
             }
-            Err(err) => {
-                log::error!("Failed to fetch owned repositories: {err}");
-                return HttpResponse::InternalServerError()
-                    .body("Failed to fetch owned repositories");
+            new_repos
+        }
+        Err(err) => {
+            log::error!("Failed to fetch owned repositories: {err}");
+            return HttpResponse::InternalServerError().body("Failed to fetch owned repositories");
+        }
+    };
+    let accessible_repositories: Vec<SimpleRemoteRepository> = match cornucopia::queries::access::get_by_user()
+        .bind(&transaction, &user.uuid)
+        .all()
+        .await
+    {
+        Ok(access) => {
+            let mut new_accessible_repos: Vec<SimpleRemoteRepository> = Vec::with_capacity(access.len());
+            for access_entry in access {
+                let repo = match cornucopia::queries::repository::get_by_uuid()
+                    .bind(&transaction, &access_entry.repository_uuid)
+                    .one()
+                    .await
+                {
+                    Ok(repo) => repo,
+                    Err(err) => {
+                        log::error!("Failed to fetch repository: {err}");
+                        return HttpResponse::InternalServerError().body("Failed to fetch repository");
+                    }
+                };
+                let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
+                    Ok(files) => files,
+                    Err(err) => {
+                        log::error!("Failed to parse file hashes: {err}");
+                        return HttpResponse::InternalServerError().body("Failed to parse file hashes");
+                    }
+                };
+                new_accessible_repos.push(SimpleRemoteRepository {
+                    uuid: repo.uuid,
+                    name: repo.name.into(),
+                    access_level: Into::<AccessLevel>::into(access_entry.access_level),
+                    size: files.size(),
+                    file_count: files.file_count(),
+                });
             }
-        };
-    let accessible_repositories: Vec<SimpleRemoteRepository> =
-        match cornucopia::queries::access::get_by_user()
-            .bind(&transaction, &user.uuid)
-            .all()
-            .await
-        {
-            Ok(access) => {
-                let mut new_accessible_repos: Vec<SimpleRemoteRepository> =
-                    Vec::with_capacity(access.len());
-                for access_entry in access {
-                    let repo = match cornucopia::queries::repository::get_by_uuid()
-                        .bind(&transaction, &access_entry.repository_uuid)
-                        .one()
-                        .await
-                    {
-                        Ok(repo) => repo,
-                        Err(err) => {
-                            log::error!("Failed to fetch repository: {err}");
-                            return HttpResponse::InternalServerError()
-                                .body("Failed to fetch repository");
-                        }
-                    };
-                    let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
-                        Ok(files) => files,
-                        Err(err) => {
-                            log::error!("Failed to parse file hashes: {err}");
-                            return HttpResponse::InternalServerError()
-                                .body("Failed to parse file hashes");
-                        }
-                    };
-                    new_accessible_repos.push(SimpleRemoteRepository {
-                        uuid: repo.uuid,
-                        name: repo.name.into(),
-                        access_level: Into::<AccessLevel>::into(access_entry.access_level),
-                        size: files.size(),
-                        file_count: files.file_count(),
-                    });
-                }
-                new_accessible_repos
-            }
-            Err(err) => {
-                log::error!("Failed to fetch accessible repositories: {err}");
-                return HttpResponse::InternalServerError()
-                    .body("Failed to fetch accessible repositories");
-            }
-        };
+            new_accessible_repos
+        }
+        Err(err) => {
+            log::error!("Failed to fetch accessible repositories: {err}");
+            return HttpResponse::InternalServerError().body("Failed to fetch accessible repositories");
+        }
+    };
     HttpResponse::Ok().json(ThisUser {
         user,
         owned_repositories,
@@ -220,11 +211,7 @@ async fn get_all_users(pool: Data<Pool>) -> impl Responder {
         }
     };
 
-    match cornucopia::queries::user::get_all()
-        .bind(&transaction)
-        .all()
-        .await
-    {
+    match cornucopia::queries::user::get_all().bind(&transaction).all().await {
         Ok(users) => {
             let mut user_list: Vec<User> = Vec::with_capacity(users.len());
             for user in users {
@@ -267,11 +254,7 @@ async fn repository(
     };
 
     if access_level == AccessLevel::None {
-        log::warn!(
-            "User {} does not have access to repository {}",
-            user.username,
-            uuid
-        );
+        log::warn!("User {} does not have access to repository {}", user.username, uuid);
         return HttpResponse::Forbidden().body("Access denied");
     }
 
@@ -493,11 +476,7 @@ async fn repository_path(
     };
 
     if access_level == AccessLevel::None {
-        log::warn!(
-            "User {} does not have access to repository {}",
-            user.username,
-            uuid
-        );
+        log::warn!("User {} does not have access to repository {}", user.username, uuid);
         return HttpResponse::Forbidden().body("Access denied");
     }
 
@@ -788,14 +767,13 @@ async fn delete_file(
         return HttpResponse::NotFound().body("File or directory not found");
     }
 
-    let root_folder =
-        match RootFolder::ingest_folder(&format!("{}/{}", root_path, repo.uuid).into()) {
-            Ok(folder) => folder,
-            Err(err) => {
-                log::error!("Failed to ingest folder: {err}");
-                return HttpResponse::InternalServerError().body("Failed to ingest folder");
-            }
-        };
+    let root_folder = match RootFolder::ingest_folder(&format!("{}/{}", root_path, repo.uuid).into()) {
+        Ok(folder) => folder,
+        Err(err) => {
+            log::error!("Failed to ingest folder: {err}");
+            return HttpResponse::InternalServerError().body("Failed to ingest folder");
+        }
+    };
     let file_hashes = match serde_json::to_value(&root_folder) {
         Ok(value) => value,
         Err(err) => {
@@ -1067,8 +1045,8 @@ impl InviteQuery {
         }
     }
     fn extract(&self) -> Result<Uuid> {
-        let decoded_code = decode_string_base64(&self.code)
-            .map_err(|_| anyhow::anyhow!("Failed to decode invite code"))?;
+        let decoded_code =
+            decode_string_base64(&self.code).map_err(|_| anyhow::anyhow!("Failed to decode invite code"))?;
         let decrypted_code = xor_cypher(decoded_code);
         let parts: Vec<&str> = decrypted_code.split('|').collect();
         if parts.len() != 3 {
@@ -1383,8 +1361,7 @@ async fn main() -> std::io::Result<()> {
                 });
                 println!("Syncing repository {}/{total}: {}", i + 1, repo.name);
 
-                let root_path =
-                    std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
+                let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
                 let full_path = format!("{}/{}", root_path, repo.uuid);
 
                 if !std::path::Path::new(&full_path).exists() {
@@ -1395,10 +1372,7 @@ async fn main() -> std::io::Result<()> {
                 let root_folder = match pitsu_lib::RootFolder::ingest_folder(&full_path.into()) {
                     Ok(folder) => folder,
                     Err(err) => {
-                        log::error!(
-                            "Failed to ingest folder for repository {}: {err}",
-                            repo.name
-                        );
+                        log::error!("Failed to ingest folder for repository {}: {err}", repo.name);
                         continue;
                     }
                 };
@@ -1406,10 +1380,7 @@ async fn main() -> std::io::Result<()> {
                 let file_hashes = match serde_json::to_value(&root_folder) {
                     Ok(value) => value,
                     Err(err) => {
-                        log::error!(
-                            "Failed to serialize file hashes for repository {}: {err}",
-                            repo.name
-                        );
+                        log::error!("Failed to serialize file hashes for repository {}: {err}", repo.name);
                         continue;
                     }
                 };
@@ -1427,10 +1398,7 @@ async fn main() -> std::io::Result<()> {
                         }
                     }
                     Err(err) => {
-                        log::error!(
-                            "Failed to update file hashes for repository {}: {err}",
-                            repo.name
-                        );
+                        log::error!("Failed to update file hashes for repository {}: {err}", repo.name);
 
                         if let Err(rollback_err) = transaction.rollback().await {
                             log::error!("Failed to rollback transaction: {rollback_err}");
@@ -1453,16 +1421,14 @@ async fn create_pool() -> Result<Pool, deadpool_postgres::CreatePoolError> {
     cfg.create_pool(Some(deadpool_postgres::Runtime::Tokio1), postgres::NoTls)
 }
 
-pub async fn get_user(
-    req: &actix_web::HttpRequest,
-    pool: Arc<Pool>,
-) -> Result<User, actix_web::Error> {
+pub async fn get_user(req: &actix_web::HttpRequest, pool: Arc<Pool>) -> Result<User, actix_web::Error> {
     if let Some(auth_header) = req.headers().get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                let mut connection = pool.get().await.map_err(|_| {
-                    actix_web::error::ErrorInternalServerError("Database connection error")
-                })?;
+                let mut connection = pool
+                    .get()
+                    .await
+                    .map_err(|_| actix_web::error::ErrorInternalServerError("Database connection error"))?;
                 let transaction = connection
                     .transaction()
                     .await
@@ -1511,9 +1477,9 @@ pub async fn check_user_access(
     }
 }
 
-impl Into<AccessLevel> for cornucopia::types::public::AccessLevel {
-    fn into(self) -> AccessLevel {
-        match self {
+impl From<cornucopia::types::public::AccessLevel> for AccessLevel {
+    fn from(val: cornucopia::types::public::AccessLevel) -> Self {
+        match val {
             cornucopia::types::public::AccessLevel::NONE => AccessLevel::None,
             cornucopia::types::public::AccessLevel::READ => AccessLevel::Read,
             cornucopia::types::public::AccessLevel::WRITE => AccessLevel::Write,
@@ -1572,8 +1538,7 @@ async fn build_executable() -> Result<PathBuf> {
             ));
         }
         // Return the path to the built executable
-        let executable_path =
-            format!("{crate_root}/target/x86_64-pc-windows-gnu/release/pitsu.exe");
+        let executable_path = format!("{crate_root}/target/x86_64-pc-windows-gnu/release/pitsu.exe");
         Ok(PathBuf::from(executable_path))
     })
     .await?
@@ -1592,10 +1557,7 @@ fn get_client_version() -> Result<VersionNumber> {
         }
     };
     if !output.status.success() {
-        log::error!(
-            "Git pull failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        log::error!("Git pull failed: {}", String::from_utf8_lossy(&output.stderr));
         return Err(anyhow::anyhow!("Failed to update local version"));
     }
     // We need to read the line from the Cargo.toml file in ../local that has the version number

@@ -5,6 +5,7 @@ use std::sync::{mpsc, Arc};
 use colors_transform::Color;
 use eframe::egui::{self, FontData};
 use pitsu_lib::{AccessLevel, ChangeType, Diff};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -40,10 +41,7 @@ fn main() -> anyhow::Result<()> {
                 };
                 if response.status != 200 {
                     update_sender
-                        .send(Err(Arc::from(format!(
-                            "Failed to fetch update: {}",
-                            response.status
-                        ))))
+                        .send(Err(Arc::from(format!("Failed to fetch update: {}", response.status))))
                         .unwrap_or_else(|e| {
                             log::error!("Failed to send error response: {e}");
                         });
@@ -55,9 +53,7 @@ fn main() -> anyhow::Result<()> {
                 });
             },
         );
-        let update = update_receiver
-            .recv()
-            .expect("Failed to receive update file");
+        let update = update_receiver.recv().expect("Failed to receive update file");
         let update = match update {
             Ok(file) => file,
             Err(e) => {
@@ -106,13 +102,16 @@ fn main() -> anyhow::Result<()> {
                         .and_then(|s| s.parse::<f32>().ok())
                 })
                 .unwrap_or(2.0);
+            let sort_states: SortStates = cc
+                .storage
+                .and_then(|storage| storage.get_string("sort_states"))
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
             let mut fonts = egui::FontDefinitions::default();
             fonts.font_data.insert(
                 "nerdfonts".into(),
                 Arc::new({
-                    let mut data = FontData::from_static(include_bytes!(
-                        "../assets/SymbolsNerdFontMono-Regular.ttf"
-                    ));
+                    let mut data = FontData::from_static(include_bytes!("../assets/SymbolsNerdFontMono-Regular.ttf"));
                     data.tweak.y_offset_factor = 0.0;
                     data
                 }),
@@ -122,7 +121,11 @@ fn main() -> anyhow::Result<()> {
                 font_keys.push("nerdfonts".into());
             }
             cc.egui_ctx.set_fonts(fonts);
-            Ok(Box::new(App::new(ppp)))
+            Ok(Box::new(App {
+                ppp,
+                sort: sort_states,
+                ..Default::default()
+            }))
         }),
     ) {
         log::error!("Failed to run Pitsu: {e}");
@@ -140,16 +143,18 @@ pub struct Repository {
 }
 
 pub struct App {
-    cache: cache::RequestCache,
+    long_running: cache::RequestCache,
     ppp: f32,
     state: AppState,
-    edit_pitignore: Option<(Pitignore, EditState, bool)>,
+    state_stack: Vec<AppState>,
     sort: SortStates,
+    edit_pitignore: Option<(Pitignore, EditState, bool)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Main,
+    Settings,
     RepositoryDetails { uuid: Uuid, hover_state: HoverType },
     EditPitignore { uuid: Uuid },
 }
@@ -166,7 +171,7 @@ impl eframe::App for App {
             let mut new_state = self.header(ui, ctx, frame);
             match self.state {
                 AppState::Main => {
-                    if let Ok(Some(this)) = self.cache.this_user() {
+                    if let Ok(Some(this)) = self.long_running.this_user() {
                         let table = egui_extras::TableBuilder::new(ui)
                             .striped(false)
                             .resizable(false)
@@ -194,10 +199,7 @@ impl eframe::App for App {
                                 body.row(20.0, |mut row| {
                                     row.col(|ui| {
                                         if ui
-                                            .add(
-                                                egui::Button::new(&*repo.name)
-                                                    .wrap_mode(egui::TextWrapMode::Extend),
-                                            )
+                                            .add(egui::Button::new(&*repo.name).wrap_mode(egui::TextWrapMode::Extend))
                                             .clicked()
                                         {
                                             new_state = Some(AppState::RepositoryDetails {
@@ -207,30 +209,31 @@ impl eframe::App for App {
                                         };
                                     });
                                     row.col(|ui| {
-                                        ui.add(
-                                            egui::Label::new(repo.access_level.to_string())
-                                                .extend(),
-                                        );
+                                        ui.add(egui::Label::new(repo.access_level.to_string()).extend());
                                     });
                                 });
                             }
                         });
                     }
                 }
+                AppState::Settings => {
+                    todo!("Settings page not implemented yet");
+                }
                 AppState::RepositoryDetails { uuid, hover_state } => {
-                    if let Ok(Some(repo)) = self.cache.get_repository(uuid) {
-                        match self.cache.get_stored_repository(uuid, &repo) {
+                    if let Ok(Some(repo)) = self.long_running.get_repository(uuid) {
+                        match self.long_running.get_stored_repository(uuid, &repo) {
                             Ok(Some(Some(stored_repo))) => {
-                                self.show_stored_repository_details(
-                                    ui,
-                                    &stored_repo,
-                                    hover_state,
-                                    &mut new_state,
-                                );
+                                self.show_stored_repository_details(ui, &stored_repo, hover_state, &mut new_state);
                             }
                             Ok(Some(None)) => {
                                 ui.label("This repository is not stored locally.");
-                                if ui.button("Download Repository").clicked() {
+                                if ui
+                                    .add_enabled(
+                                        !self.long_running.sync_in_progress(),
+                                        egui::Button::new("Download Repository"),
+                                    )
+                                    .clicked()
+                                {
                                     self.change_repository_path(uuid);
                                 }
                             }
@@ -261,38 +264,49 @@ impl eframe::App for App {
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("pixels_per_point", self.ppp.to_string());
+        storage.set_string(
+            "sort_states",
+            serde_json::to_string(&self.sort).expect("Failed to serialize sort states"),
+        );
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl App {
-    fn new(ppp: f32) -> Self {
+    fn new() -> Self {
         App {
-            cache: cache::RequestCache::new(),
-            ppp,
+            long_running: cache::RequestCache::new(),
+            ppp: 1.0,
             state: AppState::RepositoryDetails {
-                uuid: Uuid::parse_str("33e704f7-f804-49ed-98ab-b2b940a2cdd5")
-                    .expect("Invalid UUID"),
+                uuid: Uuid::parse_str("33e704f7-f804-49ed-98ab-b2b940a2cdd5").expect("Invalid UUID"),
                 hover_state: HoverType::None,
             },
+            state_stack: Vec::new(),
             edit_pitignore: None,
             sort: SortStates::default(),
         }
     }
-    fn header(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-        _frame: &mut eframe::Frame,
-    ) -> Option<AppState> {
-        let go_back = match self.state {
+    fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
+        if let Ok(Some(uuid)) = self.long_running.any_sync_response() {
+            self.long_running
+                .reload_repository(uuid)
+                .expect("Failed to reload repository");
+        }
+        let go_back = self.state_stack.pop().or(match self.state {
             AppState::Main => None,
+            AppState::Settings => Some(AppState::Main),
             AppState::RepositoryDetails { .. } => Some(AppState::Main),
             AppState::EditPitignore { uuid, .. } => Some(AppState::RepositoryDetails {
                 uuid,
                 hover_state: HoverType::None,
             }),
-        };
-        let username = match self.cache.this_user() {
+        });
+        let username = match self.long_running.this_user() {
             Ok(Some(this)) => Arc::clone(&this.user.username),
             Ok(None) => {
                 return None;
@@ -305,10 +319,7 @@ impl App {
         let mut new_state = None;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(
-                    go_back.is_some(),
-                    egui::Button::new(nerdfonts::UNDO_VARIANT),
-                )
+                .add_enabled(go_back.is_some(), egui::Button::new(nerdfonts::UNDO_VARIANT))
                 .clicked()
             {
                 new_state = go_back;
@@ -318,57 +329,76 @@ impl App {
                 AppState::Main => {
                     ui.label("Repositories");
                 }
+                AppState::Settings => {
+                    ui.label("Settings");
+                }
                 AppState::RepositoryDetails { uuid, hover_state } => {
                     new_hover_state = hover_state;
-                    if let Some(repo) = self.cache.get_repository(uuid).unwrap_or(None) {
+                    if let Some(repo) = self.long_running.get_repository(uuid).unwrap_or(None) {
                         ui.label(format!("{}", repo.name));
                         if let Some(stored) = self
-                            .cache
+                            .long_running
                             .get_stored_repository(uuid, &repo)
                             .ok()
                             .flatten()
                             .flatten()
                         {
                             // Show refresh button
-                            if ui.button(nerdfonts::REFRESH).clicked() {
-                                self.cache.reload_repository(uuid);
+                            if ui
+                                .add_enabled(
+                                    !self.long_running.sync_in_progress(),
+                                    egui::Button::new(nerdfonts::REFRESH),
+                                )
+                                .clicked()
+                            {
+                                self.long_running
+                                    .reload_repository(uuid)
+                                    .expect("Failed to reload repository after changing path");
                             }
                             if !stored.diff.is_empty() {
                                 if repo.access_level >= AccessLevel::Write {
-                                    let upload = ui
-                                        .button(
-                                            egui::RichText::new(nerdfonts::UPLOAD)
-                                                .color(egui::Color32::YELLOW),
+                                    let hover_text = {
+                                        let mut text = String::from("Clicking this will:\n");
+                                        let number_to_upload = stored
+                                            .diff
+                                            .iter()
+                                            .filter(|d| {
+                                                d.change_type == ChangeType::OnClient
+                                                    || d.change_type == ChangeType::Modified
+                                            })
+                                            .count();
+                                        if number_to_upload > 0 {
+                                            text.push_str(&format!(" - Upload {number_to_upload} changes\n",));
+                                        }
+                                        let num_to_del = stored
+                                            .diff
+                                            .iter()
+                                            .filter(|d| d.change_type == ChangeType::OnServer)
+                                            .count();
+                                        if num_to_del > 0 {
+                                            text.push_str(&format!(" - Delete {num_to_del} files from server\n",));
+                                        }
+                                        text.trim()
+                                            .replace(" 1 changes", " 1 change")
+                                            .replace(" 1 files", " 1 file")
+                                            .to_string()
+                                    };
+                                    let upload = if self.long_running.upload_in_progress() {
+                                        ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                    } else {
+                                        ui.add_enabled(
+                                            !self.long_running.sync_in_progress(),
+                                            egui::Button::new(
+                                                egui::RichText::new(nerdfonts::UPLOAD).color(egui::Color32::YELLOW),
+                                            ),
                                         )
-                                        .on_hover_text({
-                                            let mut text = String::from("Clicking this will:\n");
-                                            let number_to_upload = stored
-                                                .diff
-                                                .iter()
-                                                .filter(|d| {
-                                                    d.change_type == ChangeType::OnClient
-                                                        || d.change_type == ChangeType::Modified
-                                                })
-                                                .count();
-                                            if number_to_upload > 0 {
-                                                text.push_str(&format!(
-                                                    " - Upload {number_to_upload} changes\n",
-                                                ));
-                                            }
-                                            let number_to_delete_from_server = stored
-                                                .diff
-                                                .iter()
-                                                .filter(|d| d.change_type == ChangeType::OnServer)
-                                                .count();
-                                            if number_to_delete_from_server > 0 {
-                                                text.push_str(&format!(
-                                                    " - Delete {number_to_delete_from_server} files from server\n",
-                                                ));
-                                            }
-                                            text.trim().to_string()
-                                        });
+                                        .on_hover_text(&hover_text)
+                                    };
                                     if upload.clicked() {
-                                        todo!("Upload repository changes");
+                                        if let Err(e) = self.long_running.upload_files(Arc::clone(&stored), hover_text)
+                                        {
+                                            panic!("Failed to upload files: {e}");
+                                        }
                                     }
                                     if upload.hovered() {
                                         new_hover_state = HoverType::SyncUp;
@@ -377,40 +407,58 @@ impl App {
                                     }
                                 }
                                 if repo.access_level >= AccessLevel::Read {
-                                    let download = ui
-                                        .button(
-                                            egui::RichText::new(nerdfonts::DOWNLOAD)
-                                                .color(egui::Color32::GREEN),
+                                    let hover_text = {
+                                        let mut text = String::from("Clicking this will:\n");
+                                        let number_to_download = stored
+                                            .diff
+                                            .iter()
+                                            .filter(|d| {
+                                                d.change_type == ChangeType::OnServer
+                                                    || d.change_type == ChangeType::Modified
+                                            })
+                                            .count();
+                                        if number_to_download > 0 {
+                                            text.push_str(&format!(" - Download {number_to_download} changes\n",));
+                                        }
+                                        let number_to_delete_from_client = stored
+                                            .diff
+                                            .iter()
+                                            .filter(|d| d.change_type == ChangeType::OnClient)
+                                            .count();
+                                        if number_to_delete_from_client > 0 {
+                                            text.push_str(&format!(
+                                                " - Delete {number_to_delete_from_client} files from client\n",
+                                            ));
+                                        }
+                                        let size = repo.size as i64 - stored.local.folder.size() as i64;
+                                        let sign = if size >= 0 { "+" } else { "-" };
+                                        text.push_str(&format!(
+                                            " - Size change: {}{}",
+                                            sign,
+                                            readable_size_and_color(size.unsigned_abs()).0
+                                        ));
+                                        text.trim()
+                                            .replace(" 1 changes", " 1 change")
+                                            .replace(" 1 files", " 1 file")
+                                            .to_string()
+                                    };
+                                    let download = if self.long_running.download_in_progress() {
+                                        ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                    } else {
+                                        ui.add_enabled(
+                                            !self.long_running.sync_in_progress(),
+                                            egui::Button::new(
+                                                egui::RichText::new(nerdfonts::DOWNLOAD).color(egui::Color32::GREEN),
+                                            ),
                                         )
-                                        .on_hover_text({
-                                            let mut text = String::from("Clicking this will:\n");
-                                            let number_to_download = stored
-                                                .diff
-                                                .iter()
-                                                .filter(|d| {
-                                                    d.change_type == ChangeType::OnServer
-                                                        || d.change_type == ChangeType::Modified
-                                                })
-                                                .count();
-                                            if number_to_download > 0 {
-                                                text.push_str(&format!(
-                                                    " - Download {number_to_download} changes\n",
-                                                ));
-                                            }
-                                            let number_to_delete_from_client = stored
-                                                .diff
-                                                .iter()
-                                                .filter(|d| d.change_type == ChangeType::OnClient)
-                                                .count();
-                                            if number_to_delete_from_client > 0 {
-                                                text.push_str(&format!(
-                                                    " - Delete {number_to_delete_from_client} files from client\n",
-                                                ));
-                                            }
-                                            text.trim().to_string()
-                                        });
+                                        .on_hover_text(&hover_text)
+                                    };
                                     if download.clicked() {
-                                        todo!("Download repository changes");
+                                        if let Err(e) =
+                                            self.long_running.download_files(Arc::clone(&stored), hover_text)
+                                        {
+                                            panic!("Failed to download files: {e}");
+                                        }
                                     }
                                     if download.hovered() {
                                         new_hover_state = HoverType::SyncDown;
@@ -425,7 +473,7 @@ impl App {
                     }
                 }
                 AppState::EditPitignore { uuid } => {
-                    if let Ok(Some(repo)) = self.cache.get_repository(uuid) {
+                    if let Ok(Some(repo)) = self.long_running.get_repository(uuid) {
                         ui.label(format!("Editing .pitignore for {}", repo.name));
                         if let Some((_, _, dirty)) = self.edit_pitignore {
                             if dirty {
@@ -438,7 +486,8 @@ impl App {
                                 .on_hover_text("Save changes to .pitignore");
                             }
                         }
-                    } else { // NOTE TO SELF TOO TIRED TO KEEP GOING BUT CHANGE THIS EDITING SHIT TO JUST PULL DIRECTLY OFF OF THE MUTABLE PITIGNORE INSTEAD OF ALL THIS FANCY SHIT LOL
+                    } else {
+                        // NOTE TO SELF TOO TIRED TO KEEP GOING BUT CHANGE THIS EDITING SHIT TO JUST PULL DIRECTLY OFF OF THE MUTABLE PITIGNORE INSTEAD OF ALL THIS FANCY SHIT LOL
                         ui.spinner();
                     }
                 }
@@ -449,23 +498,16 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                 ui.menu_button(&*username, |ui| {
                     ui.label(format!("UI Scale: {:.2}x", self.ppp));
-                    let slider =
-                        ui.add(egui::Slider::new(&mut self.ppp, 1.0..=4.0).show_value(false));
+                    let slider = ui.add(egui::Slider::new(&mut self.ppp, 1.0..=4.0).show_value(false));
                     if slider.drag_stopped() {
                         ctx.set_pixels_per_point(self.ppp);
                     }
                     if slider.changed() && (self.ppp - self.ppp.round()).abs() < 0.1 {
                         self.ppp = self.ppp.round();
                     }
-                    ui.add(
-                        egui::Label::new(format!("Version: {}", *config::VERSION_NUMBER))
-                            .extend(),
-                    );
-                    if let Ok(Some(hash)) = self.cache.remote_version_number() {
-                        ui.add(
-                            egui::Label::new(format!("Remote Version: {hash}"))
-                                .extend(),
-                        );
+                    ui.add(egui::Label::new(format!("Version: {}", *config::VERSION_NUMBER)).extend());
+                    if let Ok(Some(hash)) = self.long_running.remote_version_number() {
+                        ui.add(egui::Label::new(format!("Remote Version: {hash}")).extend());
                     }
                 });
                 self.update_app_button(ui);
@@ -476,22 +518,21 @@ impl App {
     }
 
     fn update_app_button(&mut self, ui: &mut egui::Ui) {
-        if let Ok(Some(version_number)) = self.cache.remote_version_number() {
+        if let Ok(Some(version_number)) = self.long_running.remote_version_number() {
             if *version_number != *config::VERSION_NUMBER
                 && ui
-                    .button(egui::RichText::new(nerdfonts::UPDATE).color(
-                        if config::VERSION_NUMBER.is_dev() {
+                    .button(
+                        egui::RichText::new(nerdfonts::UPDATE).color(if config::VERSION_NUMBER.is_dev() {
                             egui::Color32::YELLOW
                         } else {
                             egui::Color32::GREEN
-                        },
-                    ))
+                        }),
+                    )
                     .on_hover_text("Update Pitsu to the latest version")
                     .clicked()
             {
                 // Copy the executable to pitsu_old.exe
-                let this_exe =
-                    std::env::current_exe().expect("Failed to get current executable path");
+                let this_exe = std::env::current_exe().expect("Failed to get current executable path");
                 let old_exe = this_exe.with_file_name("pitsu_old.exe");
                 std::fs::copy(&this_exe, &old_exe).unwrap_or_else(|e| {
                     log::error!("Failed to create backup copy: {e}");
@@ -552,20 +593,14 @@ impl App {
         let display_path = stored_repo.local.path.display().to_string();
         ui.menu_button(
             if display_path.len() > MAX_PATH_LENGTH {
-                format!(
-                    "Path: ...{}",
-                    &display_path[display_path.len() - MAX_PATH_LENGTH + 3..]
-                )
+                format!("Path: ...{}", &display_path[display_path.len() - MAX_PATH_LENGTH + 3..])
             } else {
                 format!("Path: {display_path}")
             },
             |ui| {
                 // ui.label(format!("Full Path: {display_path}"));
-                ui.add(
-                    egui::Label::new(format!("Full Path: {}", stored_repo.local.path.display()))
-                        .extend(),
-                )
-                .on_hover_text("This is the full path to the repository on your local machine.");
+                ui.add(egui::Label::new(format!("Full Path: {}", stored_repo.local.path.display())).extend())
+                    .on_hover_text("This is the full path to the repository on your local machine.");
                 if ui
                     .button("Open in File Explorer")
                     .on_hover_text("Open the repository folder in your file explorer.")
@@ -577,8 +612,8 @@ impl App {
                     ui.close();
                 };
                 if ui
-                    .button("Change path")
-                    .on_hover_text("Change the path to the repository on your local machine.")
+                    .add_enabled(!self.long_running.sync_in_progress(), egui::Button::new("Change path"))
+                    .on_hover_text("Change the local repository path.")
                     .clicked()
                 {
                     self.change_repository_path(stored_repo.local.uuid);
@@ -587,12 +622,7 @@ impl App {
             },
         );
     }
-    fn repository_pitignore(
-        &mut self,
-        ui: &mut egui::Ui,
-        stored_repo: &Repository,
-        new_state: &mut Option<AppState>,
-    ) {
+    fn repository_pitignore(&mut self, ui: &mut egui::Ui, stored_repo: &Repository, new_state: &mut Option<AppState>) {
         if !stored_repo.pitignore.patterns.is_empty() {
             let table = egui_extras::TableBuilder::new(ui)
                 .striped(false)
@@ -603,13 +633,8 @@ impl App {
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         // ui.add(egui::Label::new(nerdfonts::UPLOAD).extend());
-                        if ui
-                            .button(nerdfonts::EDIT)
-                            .on_hover_text("Edit .pitignore")
-                            .clicked()
-                        {
-                            self.edit_pitignore =
-                                Some(((*stored_repo.pitignore).clone(), EditState::None, false));
+                        if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
+                            self.edit_pitignore = Some(((*stored_repo.pitignore).clone(), EditState::None, false));
                             *new_state = Some(AppState::EditPitignore {
                                 uuid: stored_repo.local.uuid,
                             });
@@ -625,11 +650,9 @@ impl App {
                         row.col(|ui| {
                             ui.add(
                                 egui::Label::new(if pattern.negated {
-                                    egui::RichText::new(nerdfonts::CHECK)
-                                        .color(egui::Color32::LIGHT_GREEN)
+                                    egui::RichText::new(nerdfonts::CHECK).color(egui::Color32::LIGHT_GREEN)
                                 } else {
-                                    egui::RichText::new(nerdfonts::BLOCKED)
-                                        .color(egui::Color32::LIGHT_RED)
+                                    egui::RichText::new(nerdfonts::BLOCKED).color(egui::Color32::LIGHT_RED)
                                 })
                                 .extend(),
                             );
@@ -642,11 +665,7 @@ impl App {
             });
         } else {
             ui.horizontal(|ui| {
-                if ui
-                    .button(nerdfonts::EDIT)
-                    .on_hover_text("Edit .pitignore")
-                    .clicked()
-                {
+                if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
                     *new_state = Some(AppState::EditPitignore {
                         uuid: stored_repo.local.uuid,
                     });
@@ -704,10 +723,8 @@ impl App {
                             format!(
                                 "Full Path {}",
                                 match self.sort.diff {
-                                    DiffSort::Alphabetical =>
-                                        nerdfonts::SORT_ALPHABETICAL_ASCENDING,
-                                    DiffSort::AlphabeticalReverse =>
-                                        nerdfonts::SORT_ALPHABETICAL_DESCENDING,
+                                    DiffSort::Alphabetical => nerdfonts::SORT_ALPHABETICAL_ASCENDING,
+                                    DiffSort::AlphabeticalReverse => nerdfonts::SORT_ALPHABETICAL_DESCENDING,
                                     _ => "",
                                 }
                             )
@@ -763,23 +780,26 @@ impl App {
                             egui::Label::new(match diff.change_type {
                                 ChangeType::OnClient => match hover_state {
                                     HoverType::SyncUp => upload.clone(),
-                                    HoverType::SyncDown => egui::RichText::new(nerdfonts::TRASH)
-                                        .color(egui::Color32::RED),
-                                    HoverType::None => egui::RichText::new(nerdfonts::HOME)
-                                        .color(egui::Color32::ORANGE),
+                                    HoverType::SyncDown => {
+                                        egui::RichText::new(nerdfonts::TRASH).color(egui::Color32::RED)
+                                    }
+                                    HoverType::None => {
+                                        egui::RichText::new(nerdfonts::HOME).color(egui::Color32::ORANGE)
+                                    }
                                 },
                                 ChangeType::OnServer => match hover_state {
-                                    HoverType::SyncUp => egui::RichText::new(nerdfonts::TRASH)
-                                        .color(egui::Color32::RED),
+                                    HoverType::SyncUp => {
+                                        egui::RichText::new(nerdfonts::TRASH).color(egui::Color32::RED)
+                                    }
                                     HoverType::SyncDown => download.clone(),
-                                    HoverType::None => egui::RichText::new(nerdfonts::SERVER)
-                                        .color(egui::Color32::GOLD),
+                                    HoverType::None => {
+                                        egui::RichText::new(nerdfonts::SERVER).color(egui::Color32::GOLD)
+                                    }
                                 },
                                 ChangeType::Modified => match hover_state {
                                     HoverType::SyncUp => upload.clone(),
                                     HoverType::SyncDown => download.clone(),
-                                    HoverType::None => egui::RichText::new(nerdfonts::EDIT)
-                                        .color(egui::Color32::CYAN),
+                                    HoverType::None => egui::RichText::new(nerdfonts::EDIT).color(egui::Color32::CYAN),
                                 },
                             })
                             .extend(),
@@ -792,12 +812,7 @@ impl App {
             }
         });
     }
-    fn repository_local_files(
-        &mut self,
-        ui: &mut egui::Ui,
-        stored_repo: &Repository,
-        hover_state: HoverType,
-    ) {
+    fn repository_local_files(&mut self, ui: &mut egui::Ui, stored_repo: &Repository, hover_state: HoverType) {
         let table = egui_extras::TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -859,14 +874,10 @@ impl App {
                 files.sort_by(|(_, size_a), (_, size_b)| size_b.cmp(size_a));
             }
             LocalSort::Name => {
-                files.sort_by(|(name_a, _), (name_b, _)| {
-                    name_a.to_lowercase().cmp(&name_b.to_lowercase())
-                });
+                files.sort_by(|(name_a, _), (name_b, _)| name_a.to_lowercase().cmp(&name_b.to_lowercase()));
             }
             LocalSort::NameReverse => {
-                files.sort_by(|(name_a, _), (name_b, _)| {
-                    name_b.to_lowercase().cmp(&name_a.to_lowercase())
-                });
+                files.sort_by(|(name_a, _), (name_b, _)| name_b.to_lowercase().cmp(&name_a.to_lowercase()));
             }
         }
         // }
@@ -879,22 +890,21 @@ impl App {
                     let (size, color) = readable_size_and_color(size);
                     let will_be_deleted = {
                         if hover_state == HoverType::SyncDown {
-                            stored_repo.diff.iter().any(|d| {
-                                d.full_path == name && d.change_type == ChangeType::OnClient
-                            })
+                            stored_repo
+                                .diff
+                                .iter()
+                                .any(|d| d.full_path == name && d.change_type == ChangeType::OnClient)
                         } else {
                             false
                         }
                     };
                     row.col(|ui| {
                         ui.add(
-                            egui::Label::new(egui::RichText::new(&*size).color(
-                                if will_be_deleted {
-                                    egui::Color32::RED
-                                } else {
-                                    color
-                                },
-                            ))
+                            egui::Label::new(egui::RichText::new(&*size).color(if will_be_deleted {
+                                egui::Color32::RED
+                            } else {
+                                color
+                            }))
                             .extend(),
                         );
                     });
@@ -902,12 +912,8 @@ impl App {
                         // ui.add(egui::Label::new(&*name).extend());
                         if will_be_deleted {
                             ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&*name)
-                                        .color(egui::Color32::RED)
-                                        .strikethrough(),
-                                )
-                                .extend(),
+                                egui::Label::new(egui::RichText::new(&*name).color(egui::Color32::RED).strikethrough())
+                                    .extend(),
                             );
                         } else {
                             ui.add(egui::Label::new(&*name).extend());
@@ -926,16 +932,13 @@ impl App {
             if let Err(e) = CONFIG.add_stored(uuid, path) {
                 dialogue::rfd_ok_dialogue(&format!("Failed to store repository:\n{e}")).ok();
             }
-            self.cache.reload_repository(uuid);
+            self.long_running
+                .reload_repository(uuid)
+                .expect("Failed to reload repository after changing path");
         }
     }
 
-    fn pitignore_editor(
-        &mut self,
-        ui: &mut egui::Ui,
-        uuid: Uuid,
-        new_state: &mut Option<AppState>,
-    ) {
+    fn pitignore_editor(&mut self, ui: &mut egui::Ui, uuid: Uuid, new_state: &mut Option<AppState>) {
         match self.edit_pitignore {
             Some((ref mut pitignore, ref mut edit, ref mut dirty)) => {
                 let table = egui_extras::TableBuilder::new(ui)
@@ -963,8 +966,7 @@ impl App {
                                     row.col(|ui| {
                                         delete = ui
                                             .add(egui::Button::new(
-                                                egui::RichText::new(nerdfonts::TRASH)
-                                                    .color(egui::Color32::RED),
+                                                egui::RichText::new(nerdfonts::TRASH).color(egui::Color32::RED),
                                             ))
                                             .on_hover_text("Delete this pattern")
                                             .clicked();
@@ -996,15 +998,11 @@ impl App {
                                     });
                                     row.col(|ui| {
                                         if ui
-                                            .add(
-                                                egui::Button::new(&*p.pattern)
-                                                    .wrap_mode(egui::TextWrapMode::Extend),
-                                            )
+                                            .add(egui::Button::new(&*p.pattern).wrap_mode(egui::TextWrapMode::Extend))
                                             .clicked()
                                         {
                                             *dirty = true;
-                                            new_edit_state =
-                                                Some(EditState::EditingPattern { index: *index });
+                                            new_edit_state = Some(EditState::EditingPattern { index: *index });
                                         }
                                     });
                                 });
@@ -1028,8 +1026,7 @@ impl App {
                                             .add_enabled(
                                                 index == tindex,
                                                 egui::Button::new(
-                                                    egui::RichText::new(nerdfonts::TRASH)
-                                                        .color(egui::Color32::RED),
+                                                    egui::RichText::new(nerdfonts::TRASH).color(egui::Color32::RED),
                                                 ),
                                             )
                                             .on_hover_text("Delete this pattern")
@@ -1066,14 +1063,12 @@ impl App {
                                         if ui
                                             .add_enabled(
                                                 index == tindex,
-                                                egui::Button::new(&*p.pattern)
-                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                                egui::Button::new(&*p.pattern).wrap_mode(egui::TextWrapMode::Extend),
                                             )
                                             .clicked()
                                         {
                                             *dirty = true;
-                                            new_edit_state =
-                                                Some(EditState::EditingPattern { index: *index });
+                                            new_edit_state = Some(EditState::EditingPattern { index: *index });
                                         }
                                     });
                                 });
@@ -1133,11 +1128,7 @@ fn readable_size_and_color(bytes: u64) -> (Arc<str>, egui::Color32) {
     // );
     // like above but with smooth transition based on size / 1024.0
     let hsl = colors_transform::Hsl::from(
-        {
-            360.0
-                - ((((index as f32 + size / 1024.0) / (SIZES.len() - 1) as f32) * 360.0 + 240.0)
-                    % 360.0)
-        },
+        { 360.0 - ((((index as f32 + size / 1024.0) / (SIZES.len() - 1) as f32) * 360.0 + 240.0) % 360.0) },
         100.0,
         50.0,
     );
@@ -1166,6 +1157,7 @@ fn readable_size_and_color(bytes: u64) -> (Arc<str>, egui::Color32) {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct SortStates {
     diff: DiffSort,
     local_files: LocalSort,
@@ -1174,13 +1166,13 @@ struct SortStates {
 impl Default for SortStates {
     fn default() -> Self {
         Self {
-            diff: DiffSort::OnClient,
-            local_files: LocalSort::Name,
+            diff: DiffSort::Alphabetical,
+            local_files: LocalSort::SizeReverse,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffSort {
     OnClient, // Onclient, then Modified, then OnServer
     // Modified,            // Modified, then OnClient, then OnServer
@@ -1189,7 +1181,7 @@ pub enum DiffSort {
     AlphabeticalReverse, // Sort alphabetically by full path in reverse
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalSort {
     Name,        // Sort by name
     NameReverse, // Sort by name in reverse

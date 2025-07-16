@@ -193,12 +193,7 @@ impl RootFolder {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         for part in parts {
             let next_folder = current_folder.children.iter().find_map(|file| {
-                if let File::Folder {
-                    name,
-                    children,
-                    size,
-                } = file
-                {
+                if let File::Folder { name, children, size } = file {
                     if &**name == part {
                         Some(RootFolder {
                             children: children.clone(),
@@ -236,11 +231,7 @@ fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<(Arc<str>, u64)
                 let new_path = format!("{path_so_far}/{name}");
                 result.extend(recursive_flatten(children, new_path));
             }
-            File::File {
-                name,
-                hash: _,
-                size,
-            } => {
+            File::File { name, hash: _, size } => {
                 result.push((format!("{path_so_far}/{name}").into(), *size));
             }
         }
@@ -307,10 +298,7 @@ mod tests {
         fs::write(output_path, diffs_json)?;
         println!("Differences written to diffs.json");
 
-        assert!(
-            !diffs.is_empty(),
-            "No differences found, expected some diffs"
-        );
+        assert!(!diffs.is_empty(), "No differences found, expected some diffs");
         Ok(())
     }
 
@@ -395,11 +383,11 @@ impl TryFrom<&str> for AccessLevel {
 impl std::fmt::Display for AccessLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let level_str = match self {
-            AccessLevel::None => "NONE",
-            AccessLevel::Read => "READ",
-            AccessLevel::Write => "WRITE",
-            AccessLevel::Admin => "ADMIN",
-            AccessLevel::Owner => "OWNER",
+            AccessLevel::None => "None",
+            AccessLevel::Read => "Read",
+            AccessLevel::Write => "Write",
+            AccessLevel::Admin => "Admin",
+            AccessLevel::Owner => "Owner",
         };
         write!(f, "{level_str}")
     }
@@ -548,9 +536,7 @@ impl VersionNumber {
                 let version = line
                     .split('=')
                     .nth(1)
-                    .ok_or(anyhow::anyhow!(
-                        "Failed to parse version line in Cargo.toml"
-                    ))?
+                    .ok_or(anyhow::anyhow!("Failed to parse version line in Cargo.toml"))?
                     .trim();
                 let parts: Vec<&str> = version.split('.').collect();
                 if parts.len() >= 3 {

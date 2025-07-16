@@ -5,6 +5,7 @@ use ehttp::{fetch, Request};
 use lazy_static::lazy_static;
 use pitsu_lib::{RootFolder, ThisUser, VersionNumber};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     fmt::{self, Debug},
@@ -417,6 +418,26 @@ pub mod icons {
 
 pub fn get_request(url: &str) -> Request {
     let mut request = Request::get(url);
+    request.headers.insert(
+        "Authorization",
+        format!("Bearer {}", CONFIG.api_key().as_ref()),
+    );
+    request
+}
+
+pub fn post_request(url: &str, body: Value) -> Request {
+    let mut request: Request = Request::json(url, &body).expect("Failed to create JSON request");
+    request.headers.insert(
+        "Authorization",
+        format!("Bearer {}", CONFIG.api_key().as_ref()),
+    );
+    request.method = "POST".to_string();
+    request
+}
+
+pub fn delete_request(url: &str) -> Request {
+    let mut request = Request::get(url);
+    request.method = "DELETE".to_string();
     request.headers.insert(
         "Authorization",
         format!("Bearer {}", CONFIG.api_key().as_ref()),
