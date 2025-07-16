@@ -58,7 +58,8 @@ fn main() -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("Failed to fetch update: {e}"));
             }
         };
-        // Delete the "old" pitsu.exe if it exists
+        // Delete the "old" pitsu.exe if it exists, wait a sec for it to exit just in case
+        std::thread::sleep(std::time::Duration::from_secs(1));
         if new_exe.exists() {
             std::fs::remove_file(&new_exe).expect("Failed to remove old pitsu.exe");
         }

@@ -114,7 +114,8 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
     log::error!(
         "{} PANIC: {} at {}",
         crate::config::CONFIG.username(),
-        info.payload().downcast_ref::<&str>().unwrap_or(&"No payload"),
+        // info.payload().downcast_ref::<&str>().unwrap_or(&"No payload"),
+        info,
         info.location().map_or("unknown location".into(), |l| l.to_string())
     );
     let payload = info
