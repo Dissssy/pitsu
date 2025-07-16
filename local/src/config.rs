@@ -238,7 +238,27 @@ fn get_api_key() -> Arc<str> {
 struct StoredRepository {
     uuid: Uuid,
     path: PathBuf,
+    #[serde(
+        deserialize_with = "rename_deserialize_pitignore",
+        serialize_with = "rename_serialize_pitignore"
+    )]
     overrides: Pitignore,
+}
+
+// when serialized, i want overrides: Pitignore, to be flattened to overrides: Vec<pitignore.patterns>
+fn rename_serialize_pitignore<S>(pitignore: &Pitignore, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_newtype_struct("overrides", &pitignore.patterns)
+}
+
+fn rename_deserialize_pitignore<'de, D>(deserializer: D) -> Result<Pitignore, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let patterns: Vec<(usize, pitsu_lib::PitignorePattern)> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(Pitignore { patterns })
 }
 
 #[derive(Debug, Clone)]

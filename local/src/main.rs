@@ -535,16 +535,18 @@ impl App {
                                         });
                                     }
                                 });
-                                ui.centered_and_justified(|ui| {
-                                    ui.set_height(20.0);
-                                    if ui
-                                        .button(nerdfonts::ACCOUNT_PLUS)
-                                        .on_hover_text("Add user to repository")
-                                        .clicked()
-                                    {
-                                        self.add_user_modal = true;
-                                    };
-                                });
+                                if is_admin {
+                                    ui.centered_and_justified(|ui| {
+                                        ui.set_height(20.0);
+                                        if ui
+                                            .button(nerdfonts::ACCOUNT_PLUS)
+                                            .on_hover_text("Add user to repository")
+                                            .clicked()
+                                        {
+                                            self.add_user_modal = true;
+                                        };
+                                    });
+                                }
                             })
                             .response
                             .clicked()
@@ -773,20 +775,26 @@ impl App {
                 .with_main_justify(true)
                 .with_cross_justify(true),
             |ui| {
+                let (diff_to_show, pitignore_to_show) = match (hover_state, has_write_perms) {
+                    (HoverType::None, true) => (&stored_repo.local_pitignore_diff, &stored_repo.local_pitignore),
+                    (HoverType::None, false) => (&stored_repo.remote_pitignore_diff, &stored_repo.remote_pitignore),
+                    (HoverType::SyncUp, _) => (&stored_repo.local_pitignore_diff, &stored_repo.local_pitignore),
+                    (HoverType::SyncDown, _) => (&stored_repo.remote_pitignore_diff, &stored_repo.remote_pitignore),
+                };
                 ui.vertical(|ui| {
                     self.repository_info(ui, stored_repo);
                     // if !stored_repo.pitignore.patterns.is_empty() {
                     //     // ui.separator();
-                    self.repository_pitignore(ui, stored_repo, new_state);
+                    self.repository_pitignore(
+                        ui,
+                        pitignore_to_show,
+                        new_state,
+                        stored_repo.local.uuid,
+                        has_write_perms,
+                    );
                     // }
                 });
                 let local_empty = stored_repo.local.folder.is_empty();
-                let diff_to_show = match (hover_state, has_write_perms) {
-                    (HoverType::None, true) => &stored_repo.local_pitignore_diff,
-                    (HoverType::None, false) => &stored_repo.remote_pitignore_diff,
-                    (HoverType::SyncUp, _) => &stored_repo.local_pitignore_diff,
-                    (HoverType::SyncDown, _) => &stored_repo.remote_pitignore_diff,
-                };
                 if !diff_to_show.is_empty() {
                     ui.with_layout(
                         egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(local_empty),
@@ -839,8 +847,15 @@ impl App {
             },
         );
     }
-    fn repository_pitignore(&mut self, ui: &mut egui::Ui, stored_repo: &Repository, new_state: &mut Option<AppState>) {
-        if !stored_repo.local_pitignore.patterns.is_empty() {
+    fn repository_pitignore(
+        &mut self,
+        ui: &mut egui::Ui,
+        pitignore_to_show: &Arc<Pitignore>,
+        new_state: &mut Option<AppState>,
+        uuid: Uuid,
+        has_write_perms: bool,
+    ) {
+        if !pitignore_to_show.patterns.is_empty() {
             let table = egui_extras::TableBuilder::new(ui)
                 .striped(false)
                 .resizable(false)
@@ -850,12 +865,13 @@ impl App {
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         // ui.add(egui::Label::new(nerdfonts::UPLOAD).extend());
-                        if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
-                            self.edit_pitignore =
-                                Some(((*stored_repo.local_pitignore).clone(), EditState::None, false));
-                            *new_state = Some(AppState::EditPitignore {
-                                uuid: stored_repo.local.uuid,
-                            });
+                        // if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
+                        if ui
+                            .add_enabled(has_write_perms, egui::Button::new(nerdfonts::EDIT))
+                            .clicked()
+                        {
+                            self.edit_pitignore = Some(((**pitignore_to_show).clone(), EditState::None, false));
+                            *new_state = Some(AppState::EditPitignore { uuid });
                         }
                     });
                     header.col(|ui| {
@@ -863,7 +879,7 @@ impl App {
                     });
                 });
             table.body(|mut body| {
-                for (_index, pattern) in &stored_repo.local_pitignore.patterns {
+                for (_index, pattern) in &pitignore_to_show.patterns {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
                             ui.add(
@@ -884,9 +900,7 @@ impl App {
         } else {
             ui.horizontal(|ui| {
                 if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
-                    *new_state = Some(AppState::EditPitignore {
-                        uuid: stored_repo.local.uuid,
-                    });
+                    *new_state = Some(AppState::EditPitignore { uuid });
                 }
                 ui.label("Pitignore");
             });
