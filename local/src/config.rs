@@ -26,7 +26,7 @@ pub fn setup() {
         .expect("Failed to convert executable name to string");
     if let Some(api_key) = binary_name.strip_prefix("pitsu.") {
         let api_key = api_key.strip_suffix(".exe").unwrap_or(api_key);
-        dialogue::rfd_ok_dialogue(&format!("Extracted API key: {api_key}")).ok();
+        let api_key = api_key.split(' ').next().unwrap_or(api_key); // removes any accidental multi-file downloads (1) etc.
         log::info!("Extracted API key from binary name: {api_key}");
         let new_exe_name = exe.with_file_name("pitsu.exe");
         std::fs::rename(exe, new_exe_name).expect("Failed to rename executable");
