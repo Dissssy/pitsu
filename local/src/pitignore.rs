@@ -19,9 +19,7 @@ pub struct Pattern {
 
 impl Pitignore {
     pub fn blank() -> Self {
-        Self {
-            patterns: Vec::new(),
-        }
+        Self { patterns: Vec::new() }
     }
     pub fn from_repository(root_folder: std::path::PathBuf) -> Result<Self> {
         let pitignore_path = root_folder.join(".pitignore");

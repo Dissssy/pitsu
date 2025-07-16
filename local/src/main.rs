@@ -299,15 +299,16 @@ impl App {
         App {
             long_running: cache::RequestCache::new(),
             ppp: 1.0,
-            state: AppState::RepositoryDetails {
-                uuid: Uuid::parse_str("33e704f7-f804-49ed-98ab-b2b940a2cdd5").expect("Invalid UUID"),
-                hover_state: HoverType::None,
-            },
+            // state: AppState::RepositoryDetails {
+            //     uuid: Uuid::parse_str("33e704f7-f804-49ed-98ab-b2b940a2cdd5").expect("Invalid UUID"),
+            //     hover_state: HoverType::None,
+            // },
+            state: AppState::Main,
             state_stack: Vec::new(),
             edit_pitignore: None,
             sort: SortStates::default(),
             add_user_text: String::new(),
-            add_user_modal: true,
+            add_user_modal: false,
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
@@ -468,8 +469,19 @@ impl App {
                                                         egui::Label::new(format!("{:?}", user.access_level)).extend(),
                                                     );
                                                 } else {
-                                                    ui.menu_button(format!("{:?}", user.access_level), |ui| {
-                                                        if ui.button("Read").clicked() {
+                                                    let mut button = egui::containers::menu::SubMenuButton::new(
+                                                        format!("{:?}", user.access_level),
+                                                    );
+                                                    button.button = button.button.wrap_mode(egui::TextWrapMode::Extend);
+                                                    button.ui(ui, |ui| {
+                                                        if ui
+                                                            .add_enabled(
+                                                                user.access_level != AccessLevel::Read,
+                                                                egui::Button::new("Read")
+                                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                                            )
+                                                            .clicked()
+                                                        {
                                                             self.long_running.set_user_access_level(
                                                                 uuid,
                                                                 UserWithAccess {
@@ -478,7 +490,14 @@ impl App {
                                                                 },
                                                             );
                                                         }
-                                                        if ui.button("Write").clicked() {
+                                                        if ui
+                                                            .add_enabled(
+                                                                user.access_level != AccessLevel::Write,
+                                                                egui::Button::new("Write")
+                                                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                                            )
+                                                            .clicked()
+                                                        {
                                                             self.long_running.set_user_access_level(
                                                                 uuid,
                                                                 UserWithAccess {
@@ -489,7 +508,14 @@ impl App {
                                                         }
                                                         if repo.access_level == AccessLevel::Owner {
                                                             // do not collapse
-                                                            if ui.button("Admin").clicked() {
+                                                            if ui
+                                                                .add_enabled(
+                                                                    user.access_level != AccessLevel::Admin,
+                                                                    egui::Button::new("Admin")
+                                                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                                                )
+                                                                .clicked()
+                                                            {
                                                                 self.long_running.set_user_access_level(
                                                                     uuid,
                                                                     UserWithAccess {
