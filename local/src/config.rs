@@ -237,12 +237,21 @@ impl ConfigVersion {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConfigV1 {
     #[serde(default = "get_api_key")]
     #[serde(skip_serializing_if = "arc_str_empty")]
     api_key: Arc<str>,
     stored_repositories: HashMap<Uuid, Arc<StoredRepository>>,
+}
+
+impl Default for ConfigV1 {
+    fn default() -> Self {
+        ConfigV1 {
+            api_key: get_api_key(),
+            stored_repositories: HashMap::new(),
+        }
+    }
 }
 
 fn arc_str_empty(s: &Arc<str>) -> bool {
