@@ -9,7 +9,8 @@
 
 --! create
 INSERT INTO Repositories (name, owner_uuid)
-    VALUES (:name, :owner_uuid);
+    VALUES (:name, :owner_uuid)
+    RETURNING *;
 
 --! delete_by_uuid
 DELETE FROM Repositories

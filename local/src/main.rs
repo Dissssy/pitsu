@@ -161,6 +161,7 @@ pub enum AppState {
     Settings,
     RepositoryDetails { uuid: Uuid, hover_state: HoverType },
     EditPitignore { uuid: Uuid },
+    CreateRepository,
 }
 
 pub enum EditState {
@@ -256,6 +257,54 @@ impl eframe::App for App {
                         });
                     }
                 }
+                AppState::CreateRepository => {
+                    ui.with_layout(
+                        egui::Layout::top_down(egui::Align::Center).with_cross_justify(true),
+                        |ui| {
+                            // text input,
+                            ui.horizontal(|ui| {
+                                ui.label("Repository Name:");
+                                ui.add(egui::TextEdit::singleline(&mut self.long_running.new_repository_name));
+                            });
+                            // path selector,
+                            ui.horizontal(|ui| {
+                                ui.label("Repository Path:");
+                                if ui
+                                    .add(egui::Button::new(
+                                        match self
+                                            .long_running
+                                            .new_repository_path
+                                            .as_ref()
+                                            .map(|s| s.to_string_lossy())
+                                        {
+                                            None => "Select Path".to_string(),
+                                            Some(path) => path.to_string(),
+                                        },
+                                    ))
+                                    .on_hover_text("Click to select a path")
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    self.long_running.new_repository_path = match &self.long_running.new_repository_path
+                                    {
+                                        Some(path) => Some(
+                                            rfd::FileDialog::new()
+                                                .set_title("Select Repository Path")
+                                                .set_directory(path)
+                                                .pick_folder()
+                                                .unwrap_or(path.clone()),
+                                        ),
+                                        None => rfd::FileDialog::new()
+                                            .set_title("Select Repository Path")
+                                            .set_directory(std::env::current_dir().unwrap_or_default())
+                                            .pick_folder(),
+                                    }
+                                }
+                            });
+                            // create button
+                        },
+                    );
+                }
                 AppState::Settings => {
                     todo!("Settings page not implemented yet");
                 }
@@ -349,6 +398,7 @@ impl App {
         }
         let go_back = self.state_stack.pop().or(match self.state {
             AppState::Main => None,
+            AppState::CreateRepository => Some(AppState::Main),
             AppState::Settings => Some(AppState::Main),
             AppState::RepositoryDetails { .. } => Some(AppState::Main),
             AppState::EditPitignore { uuid, .. } => Some(AppState::RepositoryDetails {
@@ -378,6 +428,18 @@ impl App {
             match self.state {
                 AppState::Main => {
                     ui.label("Repositories");
+                    if ui
+                        .button(nerdfonts::PLUS)
+                        .on_hover_text("Create a new repository")
+                        .clicked()
+                    {
+                        new_state = Some(AppState::CreateRepository);
+                        self.long_running.new_repository_name.clear();
+                        self.long_running.new_repository_path = None;
+                    }
+                }
+                AppState::CreateRepository => {
+                    ui.label("Create Repository");
                 }
                 AppState::Settings => {
                     ui.label("Settings");

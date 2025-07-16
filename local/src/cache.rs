@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{mpsc, Arc},
 };
 
@@ -20,9 +21,12 @@ pub struct RequestCache {
     download: Option<PendingRequest<Uuid>>,
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
     remote_update_bytes: Option<PendingRequest<Arc<[u8]>>>,
+    create_repository: Option<PendingRequest<Arc<RemoteRepository>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
     user_action: Option<PendingRequest<Uuid>>,
+    pub new_repository_name: String,
+    pub new_repository_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -59,6 +63,9 @@ impl RequestCache {
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
             user_action: None,
+            new_repository_name: String::new(),
+            new_repository_path: None,
+            create_repository: None,
         }
     }
     pub fn remote_version_number(&mut self) -> PendingResponse<Arc<VersionNumber>> {
