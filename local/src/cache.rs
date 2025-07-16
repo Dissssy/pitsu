@@ -906,10 +906,31 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
             "{url_prefix}/{}",
             action.full_path.strip_prefix("/").unwrap_or(&*action.full_path)
         );
+        if action.action_type == ActionType::Download {
+            std::fs::create_dir_all(local_path.parent().unwrap())
+                .map_err(|e| Arc::from(format!("Failed to create directory: {e}")))?;
+        }
         // Delete if necessary
-        if action.action_type == ActionType::DeleteFromDisk || action.action_type == ActionType::Download {
+        if (action.action_type == ActionType::DeleteFromDisk || action.action_type == ActionType::Download)
+            && local_path.exists()
+        {
             if let Err(e) = std::fs::remove_file(&local_path) {
                 log::warn!("Failed to delete file {}: {e}", local_path.display());
+            }
+        }
+        if action.action_type == ActionType::DeleteFromDisk {
+            if let Some(parent) = local_path.parent() {
+                // if parent empty, remove it
+                if parent
+                    .read_dir()
+                    .map_err(|e| Arc::from(format!("Failed to read directory: {e}")))?
+                    .next()
+                    .is_none()
+                {
+                    if let Err(e) = std::fs::remove_dir(parent) {
+                        log::warn!("Failed to remove empty directory {}: {e}", parent.display());
+                    }
+                }
             }
         }
         let (await_sender, await_receiver) = mpsc::channel::<Result<(), Arc<str>>>();
