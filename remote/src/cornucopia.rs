@@ -222,7 +222,7 @@ GenericClient
     VALUES ($1, $2, $3)
     ON CONFLICT (repository_uuid, user_uuid)
     DO UPDATE SET access_level = EXCLUDED.access_level,
-                  updated_at = CURRENT_TIMESTAMP")) } pub struct
+              updated_at = CURRENT_TIMESTAMP")) } pub struct
 CreateOrUpdateStmt(cornucopia_async::private::Stmt); impl CreateOrUpdateStmt
 { pub async fn bind<'a, C:
 GenericClient,>(&'a mut self, client: &'a  C,
