@@ -527,7 +527,7 @@ async fn set_access_level(
         }
     };
 
-    if let Err(err) = cornucopia::queries::access::create()
+    if let Err(err) = cornucopia::queries::access::create_or_update()
         .bind(&transaction, &uuid, &body.user.uuid, &body.access_level.into())
         .await
     {
