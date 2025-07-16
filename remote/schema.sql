@@ -24,5 +24,6 @@ CREATE TABLE Access (
     -- access_level TEXT NOT NULL CHECK (access_level IN ('READ', 'WRITE', 'ADMIN')),
     access_level access_level NOT NULL CHECK (access_level IN ('READ', 'WRITE', 'ADMIN')), -- 'NONE' and 'OWNER' are not included here as they are generated on-the-fly during queries
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (repository_uuid, user_uuid)
 );

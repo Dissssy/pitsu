@@ -4,15 +4,18 @@
 --     user_uuid UUID NOT NULL REFERENCES Users(uuid) ON DELETE CASCADE,
 --     access_level TEXT NOT NULL CHECK (access_level IN ('READ', 'WRITE', 'ADMIN')),
 --     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
---     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+--     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--     UNIQUE (repository_uuid, user_uuid)
 -- );
 
 --! create_or_update
+-- variables: repository_uuid, user_uuid, access_level
+-- query for existing record with repository_uuid and user_uuid, and update if it exists, otherwise insert a new record, we can't do a dual unique constraint so on conflict does not work here
 INSERT INTO Access (repository_uuid, user_uuid, access_level)
-    VALUES (:repository_uuid, :user_uuid, :access_level)
-    ON CONFLICT (repository_uuid, user_uuid)
-    DO UPDATE SET access_level = EXCLUDED.access_level,
-                  updated_at = CURRENT_TIMESTAMP;
+VALUES (:repository_uuid, :user_uuid, :access_level)
+ON CONFLICT (repository_uuid, user_uuid)
+DO UPDATE SET access_level = EXCLUDED.access_level,
+              updated_at = CURRENT_TIMESTAMP;
 
 --! delete_by_user_uuid_and_repository_uuid
 DELETE FROM Access
