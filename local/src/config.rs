@@ -244,8 +244,7 @@ fn get_api_key() -> Arc<str> {
         let api_key = api_key.strip_suffix(".exe").unwrap_or(api_key);
         log::info!("Extracted API key from binary name: {api_key}");
         let new_exe_name = exe.with_file_name("pitsu.exe");
-        std::fs::copy(&exe, new_exe_name).expect("Failed to rename executable");
-        std::fs::remove_file(exe).expect("Failed to remove old executable");
+        std::fs::rename(exe, new_exe_name).expect("Failed to rename executable");
         api_key.trim().to_string().into()
     } else {
         log::info!("No API key found in binary name");
