@@ -135,8 +135,10 @@ fn main() -> anyhow::Result<()> {
 pub struct Repository {
     local: Arc<LocalRepository>,
     // remote: Arc<RemoteRepository>,
-    diff: Arc<[Diff]>,
-    pitignore: Arc<Pitignore>,
+    local_pitignore_diff: Arc<[Diff]>,
+    remote_pitignore_diff: Arc<[Diff]>,
+    local_pitignore: Arc<Pitignore>,
+    remote_pitignore: Arc<Pitignore>,
 }
 
 pub struct App {
@@ -236,7 +238,13 @@ impl eframe::App for App {
                     if let Ok(Some(repo)) = self.long_running.get_repository(uuid) {
                         match self.long_running.get_stored_repository(uuid, &repo) {
                             Ok(Some(Some(stored_repo))) => {
-                                self.show_stored_repository_details(ui, &stored_repo, hover_state, &mut new_state);
+                                self.show_stored_repository_details(
+                                    ui,
+                                    &stored_repo,
+                                    hover_state,
+                                    &mut new_state,
+                                    repo.access_level >= AccessLevel::Write,
+                                );
                             }
                             Ok(Some(None)) => {
                                 ui.label("This repository is not stored locally.");
@@ -562,116 +570,111 @@ impl App {
                                     .reload_repository(uuid)
                                     .expect("Failed to reload repository after changing path");
                             }
-                            if !stored.diff.is_empty() {
-                                if repo.access_level >= AccessLevel::Write {
-                                    let hover_text = {
-                                        let mut text = String::from("Clicking this will:\n");
-                                        let number_to_upload = stored
-                                            .diff
-                                            .iter()
-                                            .filter(|d| {
-                                                d.change_type == ChangeType::OnClient
-                                                    || d.change_type == ChangeType::Modified
-                                            })
-                                            .count();
-                                        if number_to_upload > 0 {
-                                            text.push_str(&format!(" - Upload {number_to_upload} changes\n",));
-                                        }
-                                        let num_to_del = stored
-                                            .diff
-                                            .iter()
-                                            .filter(|d| d.change_type == ChangeType::OnServer)
-                                            .count();
-                                        if num_to_del > 0 {
-                                            text.push_str(&format!(" - Delete {num_to_del} files from server\n",));
-                                        }
-                                        text.trim()
-                                            .replace(" 1 changes", " 1 change")
-                                            .replace(" 1 files", " 1 file")
-                                            .to_string()
-                                    };
-                                    let upload = if self.long_running.upload_in_progress() {
-                                        ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
-                                    } else {
-                                        ui.add_enabled(
-                                            !self.long_running.sync_in_progress(),
-                                            egui::Button::new(
-                                                egui::RichText::new(nerdfonts::UPLOAD).color(egui::Color32::YELLOW),
-                                            ),
-                                        )
-                                        .on_hover_text(&hover_text)
-                                    };
-                                    if upload.clicked() {
-                                        if let Err(e) = self.long_running.upload_files(Arc::clone(&stored), hover_text)
-                                        {
-                                            panic!("Failed to upload files: {e}");
-                                        }
+                            if !stored.local_pitignore_diff.is_empty() && repo.access_level >= AccessLevel::Write {
+                                let hover_text = {
+                                    let mut text = String::from("Clicking this will:\n");
+                                    let number_to_upload = stored
+                                        .local_pitignore_diff
+                                        .iter()
+                                        .filter(|d| {
+                                            d.change_type == ChangeType::OnClient
+                                                || d.change_type == ChangeType::Modified
+                                        })
+                                        .count();
+                                    if number_to_upload > 0 {
+                                        text.push_str(&format!(" - Upload {number_to_upload} changes\n",));
                                     }
-                                    if upload.hovered() {
-                                        new_hover_state = HoverType::SyncUp;
-                                    } else if hover_state == HoverType::SyncUp {
-                                        new_hover_state = HoverType::None;
+                                    let num_to_del = stored
+                                        .local_pitignore_diff
+                                        .iter()
+                                        .filter(|d| d.change_type == ChangeType::OnServer)
+                                        .count();
+                                    if num_to_del > 0 {
+                                        text.push_str(&format!(" - Delete {num_to_del} files from server\n",));
+                                    }
+                                    text.trim()
+                                        .replace(" 1 changes", " 1 change")
+                                        .replace(" 1 files", " 1 file")
+                                        .to_string()
+                                };
+                                let upload = if self.long_running.upload_in_progress() {
+                                    ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                } else {
+                                    ui.add_enabled(
+                                        !self.long_running.sync_in_progress(),
+                                        egui::Button::new(
+                                            egui::RichText::new(nerdfonts::UPLOAD).color(egui::Color32::YELLOW),
+                                        ),
+                                    )
+                                    .on_hover_text(&hover_text)
+                                };
+                                if upload.clicked() {
+                                    if let Err(e) = self.long_running.upload_files(Arc::clone(&stored), hover_text) {
+                                        panic!("Failed to upload files: {e}");
                                     }
                                 }
-                                if repo.access_level >= AccessLevel::Read {
-                                    let hover_text = {
-                                        let mut text = String::from("Clicking this will:\n");
-                                        let number_to_download = stored
-                                            .diff
-                                            .iter()
-                                            .filter(|d| {
-                                                d.change_type == ChangeType::OnServer
-                                                    || d.change_type == ChangeType::Modified
-                                            })
-                                            .count();
-                                        if number_to_download > 0 {
-                                            text.push_str(&format!(" - Download {number_to_download} changes\n",));
-                                        }
-                                        let number_to_delete_from_client = stored
-                                            .diff
-                                            .iter()
-                                            .filter(|d| d.change_type == ChangeType::OnClient)
-                                            .count();
-                                        if number_to_delete_from_client > 0 {
-                                            text.push_str(&format!(
-                                                " - Delete {number_to_delete_from_client} files from client\n",
-                                            ));
-                                        }
-                                        let size = repo.size as i64 - stored.local.folder.size() as i64;
-                                        let sign = if size >= 0 { "+" } else { "-" };
+                                if upload.hovered() {
+                                    new_hover_state = HoverType::SyncUp;
+                                } else if hover_state == HoverType::SyncUp {
+                                    new_hover_state = HoverType::None;
+                                }
+                            }
+                            if !stored.remote_pitignore_diff.is_empty() && repo.access_level >= AccessLevel::Read {
+                                let hover_text = {
+                                    let mut text = String::from("Clicking this will:\n");
+                                    let number_to_download = stored
+                                        .remote_pitignore_diff
+                                        .iter()
+                                        .filter(|d| {
+                                            d.change_type == ChangeType::OnServer
+                                                || d.change_type == ChangeType::Modified
+                                        })
+                                        .count();
+                                    if number_to_download > 0 {
+                                        text.push_str(&format!(" - Download {number_to_download} changes\n",));
+                                    }
+                                    let number_to_delete_from_client = stored
+                                        .remote_pitignore_diff
+                                        .iter()
+                                        .filter(|d| d.change_type == ChangeType::OnClient)
+                                        .count();
+                                    if number_to_delete_from_client > 0 {
                                         text.push_str(&format!(
-                                            " - Size change: {}{}",
-                                            sign,
-                                            readable_size_and_color(size.unsigned_abs()).0
+                                            " - Delete {number_to_delete_from_client} files from client\n",
                                         ));
-                                        text.trim()
-                                            .replace(" 1 changes", " 1 change")
-                                            .replace(" 1 files", " 1 file")
-                                            .to_string()
-                                    };
-                                    let download = if self.long_running.download_in_progress() {
-                                        ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
-                                    } else {
-                                        ui.add_enabled(
-                                            !self.long_running.sync_in_progress(),
-                                            egui::Button::new(
-                                                egui::RichText::new(nerdfonts::DOWNLOAD).color(egui::Color32::GREEN),
-                                            ),
-                                        )
-                                        .on_hover_text(&hover_text)
-                                    };
-                                    if download.clicked() {
-                                        if let Err(e) =
-                                            self.long_running.download_files(Arc::clone(&stored), hover_text)
-                                        {
-                                            panic!("Failed to download files: {e}");
-                                        }
                                     }
-                                    if download.hovered() {
-                                        new_hover_state = HoverType::SyncDown;
-                                    } else if hover_state == HoverType::SyncDown {
-                                        new_hover_state = HoverType::None;
+                                    let size = repo.size as i64 - stored.local.folder.size() as i64;
+                                    let sign = if size >= 0 { "+" } else { "-" };
+                                    text.push_str(&format!(
+                                        " - Size change: {}{}",
+                                        sign,
+                                        readable_size_and_color(size.unsigned_abs()).0
+                                    ));
+                                    text.trim()
+                                        .replace(" 1 changes", " 1 change")
+                                        .replace(" 1 files", " 1 file")
+                                        .to_string()
+                                };
+                                let download = if self.long_running.download_in_progress() {
+                                    ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                } else {
+                                    ui.add_enabled(
+                                        !self.long_running.sync_in_progress(),
+                                        egui::Button::new(
+                                            egui::RichText::new(nerdfonts::DOWNLOAD).color(egui::Color32::GREEN),
+                                        ),
+                                    )
+                                    .on_hover_text(&hover_text)
+                                };
+                                if download.clicked() {
+                                    if let Err(e) = self.long_running.download_files(Arc::clone(&stored), hover_text) {
+                                        panic!("Failed to download files: {e}");
                                     }
+                                }
+                                if download.hovered() {
+                                    new_hover_state = HoverType::SyncDown;
+                                } else if hover_state == HoverType::SyncDown {
+                                    new_hover_state = HoverType::None;
                                 }
                             }
                         }
@@ -763,6 +766,7 @@ impl App {
         stored_repo: &Repository,
         hover_state: HoverType,
         new_state: &mut Option<AppState>,
+        has_write_perms: bool,
     ) {
         ui.with_layout(
             egui::Layout::left_to_right(egui::Align::LEFT)
@@ -777,11 +781,17 @@ impl App {
                     // }
                 });
                 let local_empty = stored_repo.local.folder.is_empty();
-                if !stored_repo.diff.is_empty() {
+                let diff_to_show = match (hover_state, has_write_perms) {
+                    (HoverType::None, true) => &stored_repo.local_pitignore_diff,
+                    (HoverType::None, false) => &stored_repo.remote_pitignore_diff,
+                    (HoverType::SyncUp, _) => &stored_repo.local_pitignore_diff,
+                    (HoverType::SyncDown, _) => &stored_repo.remote_pitignore_diff,
+                };
+                if !diff_to_show.is_empty() {
                     ui.with_layout(
                         egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(local_empty),
                         |ui| {
-                            self.repository_diff(ui, stored_repo, hover_state, local_empty);
+                            self.repository_diff(ui, diff_to_show, hover_state, local_empty);
                         },
                     );
                 }
@@ -789,7 +799,7 @@ impl App {
                     ui.with_layout(
                         egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
                         |ui| {
-                            self.repository_local_files(ui, stored_repo, hover_state);
+                            self.repository_local_files(ui, stored_repo, diff_to_show, hover_state);
                         },
                     );
                 }
@@ -830,7 +840,7 @@ impl App {
         );
     }
     fn repository_pitignore(&mut self, ui: &mut egui::Ui, stored_repo: &Repository, new_state: &mut Option<AppState>) {
-        if !stored_repo.pitignore.patterns.is_empty() {
+        if !stored_repo.local_pitignore.patterns.is_empty() {
             let table = egui_extras::TableBuilder::new(ui)
                 .striped(false)
                 .resizable(false)
@@ -841,7 +851,8 @@ impl App {
                     header.col(|ui| {
                         // ui.add(egui::Label::new(nerdfonts::UPLOAD).extend());
                         if ui.button(nerdfonts::EDIT).on_hover_text("Edit .pitignore").clicked() {
-                            self.edit_pitignore = Some(((*stored_repo.pitignore).clone(), EditState::None, false));
+                            self.edit_pitignore =
+                                Some(((*stored_repo.local_pitignore).clone(), EditState::None, false));
                             *new_state = Some(AppState::EditPitignore {
                                 uuid: stored_repo.local.uuid,
                             });
@@ -852,7 +863,7 @@ impl App {
                     });
                 });
             table.body(|mut body| {
-                for (_index, pattern) in &stored_repo.pitignore.patterns {
+                for (_index, pattern) in &stored_repo.local_pitignore.patterns {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
                             ui.add(
@@ -884,7 +895,8 @@ impl App {
     fn repository_diff(
         &mut self,
         ui: &mut egui::Ui,
-        stored_repo: &Repository,
+        // stored_repo: &Repository,
+        diff_to_show: &Arc<[Diff]>,
         hover_state: HoverType,
         local_empty: bool,
     ) {
@@ -949,7 +961,7 @@ impl App {
                 });
             });
         // if sort_now {
-        let mut diffs = stored_repo.diff.iter().cloned().collect::<Vec<_>>();
+        let mut diffs = diff_to_show.iter().cloned().collect::<Vec<_>>();
         match self.sort.diff {
             DiffSort::OnClient => {
                 diffs.sort_by(|a, b| match (a.change_type, b.change_type) {
@@ -1019,7 +1031,13 @@ impl App {
             }
         });
     }
-    fn repository_local_files(&mut self, ui: &mut egui::Ui, stored_repo: &Repository, hover_state: HoverType) {
+    fn repository_local_files(
+        &mut self,
+        ui: &mut egui::Ui,
+        stored_repo: &Repository,
+        diff_to_show: &Arc<[Diff]>,
+        hover_state: HoverType,
+    ) {
         let table = egui_extras::TableBuilder::new(ui)
             .striped(false)
             .resizable(false)
@@ -1097,8 +1115,7 @@ impl App {
                     let (size, color) = readable_size_and_color(size);
                     let will_be_deleted = {
                         if hover_state == HoverType::SyncDown {
-                            stored_repo
-                                .diff
+                            diff_to_show
                                 .iter()
                                 .any(|d| d.full_path == name && d.change_type == ChangeType::OnClient)
                         } else {

@@ -339,7 +339,7 @@ impl RequestCache {
                     match stored_repo {
                         Ok(Some(repo)) => {
                             // let mut diff = remote.files.diff(&repo.folder);
-                            let mut diff = Arc::from(repo.folder.diff(&remote.files));
+                            let diff = Arc::from(repo.folder.diff(&remote.files));
                             let pitignore = match Pitignore::from_repository(repo.path.clone()) {
                                 Ok(pitignore) => pitignore,
                                 Err(e) => {
@@ -352,12 +352,15 @@ impl RequestCache {
                                     return;
                                 }
                             };
-                            diff = pitignore.apply_patterns(&diff);
+                            let local_pitignore_diff = pitignore.apply_patterns(&diff);
+                            let remote_pitignore_diff = remote.pitignore.apply_patterns(&diff);
                             let local = Repository {
                                 local: repo,
                                 // remote: Arc::clone(&remote),
-                                diff,
-                                pitignore: Arc::from(pitignore),
+                                local_pitignore_diff,
+                                remote_pitignore_diff,
+                                local_pitignore: Arc::from(pitignore),
+                                remote_pitignore: Arc::from(remote.pitignore.clone()),
                             };
                             // println!("Loaded stored repository: {local:#?}");
                             sender.send(Ok(Some(Arc::from(local)))).unwrap_or_else(|e| {
@@ -707,7 +710,12 @@ fn generic_sync_request(
 
 fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str>> {
     let mut actions = Vec::new();
-    for diff in repository.diff.iter() {
+    let diffs = if upload {
+        repository.local_pitignore_diff.iter()
+    } else {
+        repository.remote_pitignore_diff.iter()
+    };
+    for diff in diffs {
         match diff.change_type {
             ChangeType::Modified => {
                 if upload {
