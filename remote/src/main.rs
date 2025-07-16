@@ -14,8 +14,9 @@ mod cornucopia;
 use deadpool_postgres::Pool;
 use pitsu_lib::{
     anyhow::{self, Result},
-    decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, RemoteRepository,
-    RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess, VersionNumber,
+    decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, Pitignore,
+    RemoteRepository, RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess,
+    VersionNumber,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -294,8 +295,17 @@ async fn repository(
 
             match get_all_users_with_access().bind(&transaction, &uuid).all().await {
                 Ok(users) => {
-                    //
+                    let pitignore = Pitignore::from_repository(
+                        format!(
+                            "{}/{}/",
+                            std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string()),
+                            repo.uuid
+                        )
+                        .into(),
+                    )
+                    .unwrap_or_default();
                     HttpResponse::Ok().json(RemoteRepository {
+                        pitignore,
                         uuid: repo.uuid,
                         name: repo.name.into(),
                         access_level,
@@ -1650,9 +1660,9 @@ impl From<cornucopia::types::public::AccessLevel> for AccessLevel {
     }
 }
 
-impl Into<cornucopia::types::public::AccessLevel> for AccessLevel {
-    fn into(self) -> cornucopia::types::public::AccessLevel {
-        match self {
+impl From<AccessLevel> for cornucopia::types::public::AccessLevel {
+    fn from(val: AccessLevel) -> Self {
+        match val {
             AccessLevel::None => cornucopia::types::public::AccessLevel::NONE,
             AccessLevel::Read => cornucopia::types::public::AccessLevel::READ,
             AccessLevel::Write => cornucopia::types::public::AccessLevel::WRITE,

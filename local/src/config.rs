@@ -3,7 +3,7 @@ use anyhow::Result;
 use core::panic;
 use ehttp::{fetch, Request};
 use lazy_static::lazy_static;
-use pitsu_lib::{RootFolder, ThisUser, VersionNumber};
+use pitsu_lib::{Pitignore, RootFolder, ThisUser, VersionNumber};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -13,8 +13,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 use uuid::Uuid;
-
-use crate::pitignore::Pitignore;
 
 pub fn setup() {
     std::panic::set_hook(Box::new(crate::dialogue::rfd_panic_dialogue));
@@ -174,7 +172,7 @@ impl Config {
                 .map_err(|e| anyhow::anyhow!("Failed to lock config: {}", e))?;
             match config.stored_repositories.get(&uuid) {
                 Some(repo) => repo.overrides.clone(),
-                None => Pitignore::blank(),
+                None => Pitignore::default(),
             }
         };
         let local_repo = LocalRepository {
@@ -189,7 +187,7 @@ impl Config {
         let stored_repo = Arc::new(StoredRepository {
             uuid,
             path,
-            overrides: Pitignore::blank(),
+            overrides: Pitignore::default(),
         });
         {
             let mut config = self
@@ -240,7 +238,6 @@ fn get_api_key() -> Arc<str> {
 struct StoredRepository {
     uuid: Uuid,
     path: PathBuf,
-    #[serde(flatten)]
     overrides: Pitignore,
 }
 

@@ -5,19 +5,15 @@ use std::sync::{mpsc, Arc};
 
 use colors_transform::Color;
 use eframe::egui::{self, FontData, Id};
-use pitsu_lib::{AccessLevel, ChangeType, Diff, RemoteRepository, UserWithAccess};
+use pitsu_lib::{AccessLevel, ChangeType, Diff, Pitignore, UserWithAccess};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL},
-    pitignore::Pitignore,
-};
+use crate::config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL};
 mod cache;
 mod config;
 mod dialogue;
 mod nerdfonts;
-mod pitignore;
 
 fn main() -> anyhow::Result<()> {
     config::setup();

@@ -3,12 +3,13 @@ use std::{
     sync::{mpsc, Arc},
 };
 
-use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, User, UserWithAccess, VersionNumber};
+use pitsu_lib::{
+    ChangeType, FileUpload, Pitignore, RemoteRepository, ThisUser, UploadFile, User, UserWithAccess, VersionNumber,
+};
 use uuid::Uuid;
 
 use crate::{
     config::{delete_request, delete_request_with_body, get_request, post_request, CONFIG, PUBLIC_URL},
-    pitignore::Pitignore,
     Repository,
 };
 
