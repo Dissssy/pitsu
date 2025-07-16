@@ -1000,19 +1000,38 @@ async fn create_repository(
     };
     let res = crate::cornucopia::queries::repository::create()
         .bind(&transaction, &&*body.name, &user.uuid)
+        .one()
         .await;
-    if let Err(err) = res {
-        log::error!("Failed to create repository: {err}");
-        transaction.rollback().await.unwrap_or_else(|err| {
-            log::error!("Failed to rollback transaction: {err}");
-        });
-        return HttpResponse::InternalServerError().body("Failed to create repository");
+    match res {
+        Ok(repo) => {
+            transaction.commit().await.unwrap_or_else(|err| {
+                log::error!("Failed to commit transaction: {err}");
+            });
+            HttpResponse::Created().json(RemoteRepository {
+                pitignore: Pitignore::default(),
+                uuid: repo.uuid,
+                name: repo.name.into(),
+                access_level: AccessLevel::Owner,
+                size: 0,
+                file_count: 0,
+                files: RootFolder::default(),
+                users: vec![UserWithAccess {
+                    user: User {
+                        uuid: user.uuid,
+                        username: user.username,
+                    },
+                    access_level: AccessLevel::Owner,
+                }],
+            })
+        }
+        Err(err) => {
+            log::error!("Failed to create repository: {err}");
+            transaction.rollback().await.unwrap_or_else(|err| {
+                log::error!("Failed to rollback transaction: {err}");
+            });
+            HttpResponse::InternalServerError().body("Failed to create repository")
+        }
     }
-    transaction.commit().await.unwrap_or_else(|err| {
-        log::error!("Failed to commit transaction: {err}");
-    });
-    // HttpResponse::Created().body("Repository created successfully")
-    todo!()
 }
 
 #[get("/api/invite")]

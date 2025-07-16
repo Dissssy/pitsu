@@ -36,7 +36,7 @@ pub enum File {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RootFolder {
     #[serde(default)]
     children: Vec<File>,
