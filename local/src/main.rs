@@ -1,3 +1,4 @@
+#![warn(clippy::todo)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::{mpsc, Arc};
@@ -1128,7 +1129,7 @@ fn readable_size_and_color(bytes: u64) -> (Arc<str>, egui::Color32) {
     // );
     // like above but with smooth transition based on size / 1024.0
     let hsl = colors_transform::Hsl::from(
-        { 360.0 - ((((index as f32 + size / 1024.0) / (SIZES.len() - 1) as f32) * 360.0 + 240.0) % 360.0) },
+        360.0 - ((((index as f32 + size / 1024.0) / (SIZES.len() - 1) as f32) * 360.0 + 240.0) % 360.0),
         100.0,
         50.0,
     );

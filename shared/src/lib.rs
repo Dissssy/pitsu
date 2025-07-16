@@ -327,6 +327,7 @@ pub struct RemoteRepository {
     pub file_count: usize,
     // extra details
     pub files: RootFolder,
+    pub users: Vec<UserWithAccess>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

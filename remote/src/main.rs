@@ -20,6 +20,8 @@ use pitsu_lib::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::cornucopia::queries::access::get_all_users_with_access;
+
 #[get("/")]
 async fn root() -> impl Responder {
     HttpResponse::Ok().body(format!(
@@ -273,11 +275,12 @@ async fn repository(
         }
     };
 
-    cornucopia::queries::repository::get_by_uuid()
+    match cornucopia::queries::repository::get_by_uuid()
         .bind(&transaction, &uuid)
         .one()
         .await
-        .map(|repo| {
+    {
+        Ok(repo) => {
             let files: RootFolder = match serde_json::from_value(repo.file_hashes) {
                 Ok(files) => files,
                 Err(err) => {
@@ -285,19 +288,40 @@ async fn repository(
                     return HttpResponse::InternalServerError().body("Failed to parse file hashes");
                 }
             };
-            HttpResponse::Ok().json(RemoteRepository {
-                uuid: repo.uuid,
-                name: repo.name.into(),
-                access_level,
-                size: files.size(),
-                file_count: files.file_count(),
-                files,
-            })
-        })
-        .unwrap_or_else(|err| {
+
+            match get_all_users_with_access().bind(&transaction, &uuid).all().await {
+                Ok(users) => {
+                    //
+                    HttpResponse::Ok().json(RemoteRepository {
+                        uuid: repo.uuid,
+                        name: repo.name.into(),
+                        access_level,
+                        size: files.size(),
+                        file_count: files.file_count(),
+                        files,
+                        users: users
+                            .into_iter()
+                            .map(|user| UserWithAccess {
+                                user: User {
+                                    uuid: user.user_uuid,
+                                    username: user.username.into(),
+                                },
+                                access_level: Into::<AccessLevel>::into(user.access_level),
+                            })
+                            .collect(),
+                    })
+                }
+                Err(err) => {
+                    log::error!("Failed to fetch users with access: {err}");
+                    HttpResponse::InternalServerError().body("Failed to fetch users with access")
+                }
+            }
+        }
+        Err(err) => {
             log::debug!("Failed to fetch repository: {err}");
             HttpResponse::InternalServerError().body("Failed to fetch repository")
-        })
+        }
+    }
 }
 
 #[patch("/{uuid}")]
