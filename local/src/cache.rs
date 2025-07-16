@@ -477,6 +477,28 @@ impl RequestCache {
         // if neither upload nor download have a response, return Ok(None)
         Ok(None)
     }
+    pub fn add_user_to_repository(&self, repository_uuid: Uuid, user_uuid: Uuid) {
+        ehttp::fetch(
+            post_request(
+                &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
+                serde_json::to_value(user_uuid).expect("Failed to serialize user UUID"),
+            ),
+            move |response| {
+                let response = match response {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        log::error!("Failed to add user to repository: {e}");
+                        return;
+                    }
+                };
+                if response.status != 200 {
+                    log::error!("Failed to add user to repository: {}", response.status);
+                    return;
+                }
+                log::info!("User added to repository successfully");
+            },
+        );
+    }
 }
 
 fn generic_sync_request(

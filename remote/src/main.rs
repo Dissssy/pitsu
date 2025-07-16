@@ -478,6 +478,129 @@ async fn get_users_with_access(
     }
 }
 
+#[post("/{uuid}/.pit/user/access")]
+async fn set_access_level(
+    req: actix_web::HttpRequest,
+    uuid: actix_web::web::Path<uuid::Uuid>,
+    pool: Data<Pool>,
+    body: actix_web::web::Json<UserWithAccess>,
+) -> impl Responder {
+    let pool = pool.into_inner();
+    let user = match get_user(&req, pool.clone()).await {
+        Ok(user) => user,
+        Err(err) => {
+            log::error!("Failed to get bearer token: {err}");
+            return HttpResponse::Unauthorized().body("Unauthorized");
+        }
+    };
+    let uuid = uuid.into_inner();
+
+    let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
+        Ok(level) => level,
+        Err(err) => {
+            log::error!("Failed to check user access: {err}");
+            return HttpResponse::Forbidden().body("Access denied");
+        }
+    };
+
+    if access_level < AccessLevel::Admin {
+        log::warn!(
+            "User {} does not have admin access to repository {}",
+            user.username,
+            uuid
+        );
+        return HttpResponse::Forbidden().body("Access denied");
+    }
+
+    let mut _connection = match pool.get().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            log::error!("Failed to get database connection: {err}");
+            return HttpResponse::InternalServerError().body("Database connection error");
+        }
+    };
+    let transaction = match _connection.transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("Failed to start transaction: {err}");
+            return HttpResponse::InternalServerError().body("Transaction error");
+        }
+    };
+
+    match cornucopia::queries::access::create()
+        .bind(&transaction, &uuid, &body.user.uuid, &body.access_level.into())
+        .await
+    {
+        Ok(_) => HttpResponse::Ok().body("Access level updated"),
+        Err(err) => {
+            log::error!("Failed to update access level: {err}");
+            HttpResponse::InternalServerError().body("Failed to update access level")
+        }
+    }
+}
+
+#[delete("/{uuid}/.pit/user/access")]
+async fn remove_user_access(
+    req: actix_web::HttpRequest,
+    uuid: actix_web::web::Path<uuid::Uuid>,
+    pool: Data<Pool>,
+    body: actix_web::web::Json<Uuid>,
+) -> impl Responder {
+    let pool = pool.into_inner();
+    let user = match get_user(&req, pool.clone()).await {
+        Ok(user) => user,
+        Err(err) => {
+            log::error!("Failed to get bearer token: {err}");
+            return HttpResponse::Unauthorized().body("Unauthorized");
+        }
+    };
+    let uuid = uuid.into_inner();
+
+    let access_level = match check_user_access(pool.clone(), &user.uuid, &uuid).await {
+        Ok(level) => level,
+        Err(err) => {
+            log::error!("Failed to check user access: {err}");
+            return HttpResponse::Forbidden().body("Access denied");
+        }
+    };
+
+    if access_level < AccessLevel::Admin {
+        log::warn!(
+            "User {} does not have admin access to repository {}",
+            user.username,
+            uuid
+        );
+        return HttpResponse::Forbidden().body("Access denied");
+    }
+
+    let mut _connection = match pool.get().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            log::error!("Failed to get database connection: {err}");
+            return HttpResponse::InternalServerError().body("Database connection error");
+        }
+    };
+    let transaction = match _connection.transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("Failed to start transaction: {err}");
+            return HttpResponse::InternalServerError().body("Transaction error");
+        }
+    };
+
+    match cornucopia::queries::access::delete_by_user_uuid_and_repository_uuid()
+        .bind(&transaction, &body.0, &uuid)
+        .one()
+        .await
+    {
+        Ok(_) => HttpResponse::Ok().body("Access level removed"),
+        Err(err) => {
+            log::error!("Failed to remove access level: {err}");
+            HttpResponse::InternalServerError().body("Failed to remove access level")
+        }
+    }
+}
+
 #[get("{uuid}/{path:.*}")]
 async fn repository_path(
     req: actix_web::HttpRequest,
@@ -1512,6 +1635,18 @@ impl From<cornucopia::types::public::AccessLevel> for AccessLevel {
             cornucopia::types::public::AccessLevel::WRITE => AccessLevel::Write,
             cornucopia::types::public::AccessLevel::ADMIN => AccessLevel::Admin,
             cornucopia::types::public::AccessLevel::OWNER => AccessLevel::Owner,
+        }
+    }
+}
+
+impl Into<cornucopia::types::public::AccessLevel> for AccessLevel {
+    fn into(self) -> cornucopia::types::public::AccessLevel {
+        match self {
+            AccessLevel::None => cornucopia::types::public::AccessLevel::NONE,
+            AccessLevel::Read => cornucopia::types::public::AccessLevel::READ,
+            AccessLevel::Write => cornucopia::types::public::AccessLevel::WRITE,
+            AccessLevel::Admin => cornucopia::types::public::AccessLevel::ADMIN,
+            AccessLevel::Owner => cornucopia::types::public::AccessLevel::OWNER,
         }
     }
 }

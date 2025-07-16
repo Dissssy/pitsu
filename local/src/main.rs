@@ -297,31 +297,6 @@ impl App {
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
-        if self.add_user_modal {
-            let modal = egui::Modal::new(Id::new("add_user_modal")).show(ctx, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.label("Add User to Repository");
-                });
-                ui.text_edit_singleline(&mut self.add_user_text);
-                match self.long_running.all_users() {
-                    Ok(Some(users)) => {
-                        for user in users {
-                            ui.label(format!("{}", user.username));
-                        }
-                    }
-                    Ok(None) => {
-                        ui.spinner();
-                    }
-                    Err(e) => {
-                        ui.label(format!("Error fetching users: {e}"));
-                    }
-                }
-            });
-            if modal.backdrop_response.clicked() {
-                self.add_user_modal = false;
-                self.add_user_text.clear();
-            }
-        }
         if let Ok(Some(uuid)) = self.long_running.any_sync_response() {
             self.long_running
                 .reload_repository(uuid)
@@ -363,6 +338,53 @@ impl App {
                     ui.label("Settings");
                 }
                 AppState::RepositoryDetails { uuid, hover_state } => {
+                    if self.add_user_modal {
+                        let modal = egui::Modal::new(Id::new("add_user_modal")).show(ctx, |ui| {
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui.label("Add User to Repository");
+                            });
+                            ui.text_edit_singleline(&mut self.add_user_text);
+                            match self.long_running.all_users() {
+                                Ok(Some(users)) => {
+                                    for (i, user) in users.iter().enumerate() {
+                                        if !self.add_user_text.is_empty()
+                                            && !user
+                                                .username
+                                                .to_lowercase()
+                                                .contains(&self.add_user_text.to_lowercase())
+                                        {
+                                            continue;
+                                        }
+                                        if i >= 10 {
+                                            ui.label("... (truncated, please refine your search)");
+                                            break;
+                                        }
+                                        // ui.label(format!("{}", user.username));
+                                        ui.horizontal(|ui| {
+                                            let button = ui.button(&*user.username);
+                                            if button.hovered() {
+                                                ui.label(nerdfonts::ACCOUNT_PLUS);
+                                            }
+                                            if button.clicked() {
+                                                ui.close();
+                                                self.long_running.add_user_to_repository(uuid, user.uuid);
+                                            }
+                                        });
+                                    }
+                                }
+                                Ok(None) => {
+                                    ui.spinner();
+                                }
+                                Err(e) => {
+                                    ui.label(format!("Error fetching users: {e}"));
+                                }
+                            }
+                        });
+                        if modal.backdrop_response.clicked() {
+                            self.add_user_modal = false;
+                            self.add_user_text.clear();
+                        }
+                    }
                     new_hover_state = hover_state;
                     if let Some(repo) = self.long_running.get_repository(uuid).unwrap_or(None) {
                         ui.label(format!("{}", repo.name));
