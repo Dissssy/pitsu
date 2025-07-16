@@ -1,1 +1,2 @@
 pit alias and personal ignore lists that extend the pitignore locally as well as prevent downloading updates for individual files
+recommended starter folder as an optional part of a remote repository (e.g., for souls mods it would be %localappdata%\garyttierney\me3\config\profiles\nightreign-mods)
