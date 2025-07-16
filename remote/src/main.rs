@@ -1758,6 +1758,7 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create binaries directory: {}", e))?;
             executable_path = format!("{binaries_path}/pitsu.exe");
+            tokio::fs::remove_file(&executable_path).await.ok(); // Ignore error if file doesn't exist
             let mut modified_file = tokio::fs::File::create(&executable_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
