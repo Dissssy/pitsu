@@ -5,7 +5,8 @@ use std::{
 };
 
 use pitsu_lib::{
-    ChangeType, FileUpload, Pitignore, RemoteRepository, ThisUser, UploadFile, User, UserWithAccess, VersionNumber,
+    ChangeType, CreateRemoteRepository, FileUpload, Pitignore, RemoteRepository, ThisUser, UploadFile, User,
+    UserWithAccess, VersionNumber,
 };
 use uuid::Uuid;
 
@@ -67,6 +68,79 @@ impl RequestCache {
             new_repository_path: None,
             create_repository: None,
         }
+    }
+    pub fn create_repository(&mut self, only_check: bool) -> PendingResponse<Arc<RemoteRepository>> {
+        let new_state = match &self.create_repository {
+            None => {
+                if only_check {
+                    return Ok(None);
+                }
+                let (sender, receiver) = mpsc::channel();
+                let path = self.new_repository_path.clone();
+                ehttp::fetch(
+                    post_request(
+                        &format!("{PUBLIC_URL}/api/repository"),
+                        serde_json::to_value(CreateRemoteRepository {
+                            name: self.new_repository_name.clone().into(),
+                        })
+                        .expect("Failed to serialize repository creation request"),
+                    ),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to create repository: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 201 {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to create repository: {}",
+                                    response.status
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        let repo: Result<RemoteRepository, _> = response.json();
+                        match repo {
+                            Ok(repo) => {
+                                if let Some(path) = path {
+                                    CONFIG.add_stored(repo.uuid, path).ok();
+                                }
+                                sender.send(Ok(Arc::new(repo))).unwrap_or_else(|e| {
+                                    log::error!("Failed to send repository creation response: {e}");
+                                });
+                            }
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to parse repository: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                            }
+                        }
+                    },
+                );
+                PendingRequest::Pending(receiver)
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => PendingRequest::Response(result),
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
+                }
+            },
+            Some(PendingRequest::Response(ref result)) => return result.clone().map(Some),
+        };
+        self.create_repository = Some(new_state);
+        Ok(None)
     }
     pub fn remote_version_number(&mut self) -> PendingResponse<Arc<VersionNumber>> {
         let new_state = match &self.remote_version_number {
@@ -478,6 +552,9 @@ impl RequestCache {
         self.upload = None;
         self.download = None;
         Ok(())
+    }
+    pub fn reload_this_user(&mut self) {
+        self.this_user = None;
     }
     pub fn upload_files(&mut self, repo: Arc<Repository>, button_text: String) -> PendingResponse<Uuid> {
         if self.download.is_some() {

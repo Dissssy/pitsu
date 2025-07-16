@@ -258,52 +258,72 @@ impl eframe::App for App {
                     }
                 }
                 AppState::CreateRepository => {
-                    ui.with_layout(
-                        egui::Layout::top_down(egui::Align::Center).with_cross_justify(true),
-                        |ui| {
-                            // text input,
-                            ui.horizontal(|ui| {
-                                ui.label("Repository Name:");
-                                ui.add(egui::TextEdit::singleline(&mut self.long_running.new_repository_name));
+                    match self.long_running.create_repository(true) {
+                        Ok(Some(repo)) => {
+                            new_state = Some(AppState::RepositoryDetails {
+                                uuid: repo.uuid,
+                                hover_state: HoverType::None,
                             });
-                            // path selector,
-                            ui.horizontal(|ui| {
-                                ui.label("Repository Path:");
+                            self.long_running.reload_this_user();
+                        }
+                        Ok(None) => {
+                            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                                // text input,
+                                ui.horizontal(|ui| {
+                                    ui.label("Repository Name:");
+                                    ui.add(egui::TextEdit::singleline(&mut self.long_running.new_repository_name));
+                                });
+                                // path selector,
+                                ui.horizontal(|ui| {
+                                    ui.label("Repository Path:");
+                                    if ui
+                                        .add(egui::Button::new(
+                                            match self
+                                                .long_running
+                                                .new_repository_path
+                                                .as_ref()
+                                                .map(|s| s.to_string_lossy())
+                                            {
+                                                None => "Select Path".to_string(),
+                                                Some(path) => path.to_string(),
+                                            },
+                                        ))
+                                        .on_hover_text("Click to select a path")
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
+                                        self.long_running.new_repository_path =
+                                            match &self.long_running.new_repository_path {
+                                                Some(path) => Some(
+                                                    rfd::FileDialog::new()
+                                                        .set_title("Select Repository Path")
+                                                        .set_directory(path)
+                                                        .pick_folder()
+                                                        .unwrap_or(path.clone()),
+                                                ),
+                                                None => rfd::FileDialog::new()
+                                                    .set_title("Select Repository Path")
+                                                    .set_directory(std::env::current_dir().unwrap_or_default())
+                                                    .pick_folder(),
+                                            }
+                                    }
+                                });
+                                // create button
                                 if ui
-                                    .add(egui::Button::new(
-                                        match self
-                                            .long_running
-                                            .new_repository_path
-                                            .as_ref()
-                                            .map(|s| s.to_string_lossy())
-                                        {
-                                            None => "Select Path".to_string(),
-                                            Some(path) => path.to_string(),
-                                        },
-                                    ))
-                                    .on_hover_text("Click to select a path")
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .add_enabled(
+                                        !self.long_running.new_repository_name.is_empty(),
+                                        egui::Button::new(nerdfonts::PLUS),
+                                    )
                                     .clicked()
                                 {
-                                    self.long_running.new_repository_path = match &self.long_running.new_repository_path
-                                    {
-                                        Some(path) => Some(
-                                            rfd::FileDialog::new()
-                                                .set_title("Select Repository Path")
-                                                .set_directory(path)
-                                                .pick_folder()
-                                                .unwrap_or(path.clone()),
-                                        ),
-                                        None => rfd::FileDialog::new()
-                                            .set_title("Select Repository Path")
-                                            .set_directory(std::env::current_dir().unwrap_or_default())
-                                            .pick_folder(),
-                                    }
+                                    self.long_running.create_repository(false).ok();
                                 }
                             });
-                            // create button
-                        },
-                    );
+                        }
+                        Err(e) => {
+                            ui.label(format!("Error creating repository: {e}"));
+                        }
+                    }
                 }
                 AppState::Settings => {
                     todo!("Settings page not implemented yet");
