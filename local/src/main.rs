@@ -172,7 +172,10 @@ pub enum EditState {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         match self.long_running.remote_update_bytes(true) {
-            Ok(Some(bytes)) => self_update(bytes.to_vec()).expect("Failed to update Pitsu"),
+            Ok(Some(bytes)) => {
+                self_update(bytes.to_vec()).expect("Failed to update Pitsu");
+                std::process::exit(0);
+            }
             Ok(None) => {
                 // No update bytes available
             }
