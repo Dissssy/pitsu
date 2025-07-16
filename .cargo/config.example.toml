@@ -15,3 +15,11 @@ PITSU_PUBLIC_URL = "http://your-pitsu-server:8080"
 INVITE_CODE_SUFFIX = "your-invite-code-secret-end"
 INVITE_CODE_PREFIX = "your-invite-code-secret-start"
 INVITE_CODE_ENCRYPTION_KEY = "your-invite-code-encryption-key"
+
+PITSU_API_KEY_PLACEHOLDER = "your-pitsu-api-key-placeholder"
+
+VERSION_MAJOR = "0"
+VERSION_MINOR = "0"
+VERSION_PATCH = "0"
+
+VERSION_HASH = "dev"

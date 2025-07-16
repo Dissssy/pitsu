@@ -31,6 +31,7 @@ pub fn rfd_ok_dialogue(query: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(unused)]
 pub fn get_api_key() -> Result<Arc<str>> {
     let api_key = Arc::new(Mutex::new(String::new()));
     let user_info = Arc::new(Mutex::new(None));
@@ -60,10 +61,7 @@ pub fn get_api_key() -> Result<Arc<str>> {
                     let mut api_key = api_key.lock();
                     ui.horizontal(|ui| {
                         ui.add_enabled(!query_is_some, egui::TextEdit::singleline(&mut *api_key));
-                        if ui
-                            .add_enabled(!query_is_some, egui::Button::new("Submit"))
-                            .clicked()
-                        {
+                        if ui.add_enabled(!query_is_some, egui::Button::new("Submit")).clicked() {
                             let mut query = api_query.lock();
                             *query = Some(UserInfo::get(api_key.clone().into()));
                         }
@@ -116,20 +114,15 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
     log::error!(
         "{} PANIC: {} at {}",
         crate::config::CONFIG.username(),
-        info.payload()
-            .downcast_ref::<&str>()
-            .unwrap_or(&"No payload"),
-        info.location()
-            .map_or("unknown location".into(), |l| l.to_string())
+        info.payload().downcast_ref::<&str>().unwrap_or(&"No payload"),
+        info.location().map_or("unknown location".into(), |l| l.to_string())
     );
     let payload = info
         .payload()
         .downcast_ref::<&str>()
         .unwrap_or(&"NO PANIC PAYLOAD PROVIDED")
         .to_string();
-    let location = info
-        .location()
-        .map_or("unknown location".into(), |l| l.to_string());
+    let location = info.location().map_or("unknown location".into(), |l| l.to_string());
     let text = format!("PITSU has encountered a panic:\n{payload}\n\nLocation:\n{location}");
 
     let result = rfd::MessageDialog::new()
@@ -139,14 +132,11 @@ pub fn rfd_panic_dialogue(info: &std::panic::PanicHookInfo) {
         // ))
         .set_buttons(rfd::MessageButtons::YesNo)
         .set_title("Panic Occurred")
-        .set_description(format!(
-            "{text}\n\nWould you like to copy this text to your clipboard?"
-        ))
+        .set_description(format!("{text}\n\nWould you like to copy this text to your clipboard?"))
         .show();
 
     if result == rfd::MessageDialogResult::Yes {
-        let ctx =
-            clipboard_rs::ClipboardContext::new().expect("Failed to create clipboard context");
+        let ctx = clipboard_rs::ClipboardContext::new().expect("Failed to create clipboard context");
         if let Err(e) = ctx.set_text(text.clone()) {
             eprintln!("Failed to copy text to clipboard: {e}");
         }

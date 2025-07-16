@@ -17,7 +17,10 @@ use pitsu_lib::{
     decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, RemoteRepository,
     RootFolder, SimpleRemoteRepository, ThisUser, UpdateRemoteRepository, User, UserWithAccess, VersionNumber,
 };
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    sync::Mutex,
+};
 use uuid::Uuid;
 
 use crate::cornucopia::queries::access::get_all_users_with_access;
@@ -902,7 +905,7 @@ async fn invite_user(
                 return HttpResponse::InternalServerError().body("Transaction error");
             }
         };
-        let _user = match cornucopia::queries::user::get_by_uuid()
+        let user = match cornucopia::queries::user::get_by_uuid()
             .bind(&transaction, &user_uuid)
             .one()
             .await
@@ -914,7 +917,7 @@ async fn invite_user(
             }
         };
         // eventually expand this to build for the users OS, but for now just windows
-        match build_executable().await {
+        match build_executable(Some(Arc::from(user.api_key))).await {
             Ok(path) => path,
             Err(err) => {
                 log::error!("Failed to build executable: {err}");
@@ -1017,7 +1020,7 @@ async fn get_latest_version(req: actix_web::HttpRequest, pool: Data<Pool>) -> im
     //     return HttpResponse::InternalServerError().body("Failed to update local version");
     // }
     // build and serve the executable file
-    let path = match build_executable().await {
+    let path = match build_executable(None).await {
         Ok(path) => path,
         Err(err) => {
             log::error!("Failed to build executable: {err}");
@@ -1513,7 +1516,7 @@ impl From<cornucopia::types::public::AccessLevel> for AccessLevel {
     }
 }
 
-async fn build_executable() -> Result<PathBuf> {
+async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
     tokio::spawn(async {
         // Set the environment variables for the build
         // std::env::set_var("PITSU_API_KEY", api_key);
@@ -1565,8 +1568,49 @@ async fn build_executable() -> Result<PathBuf> {
                 String::from_utf8_lossy(&output.stderr)
             ));
         }
-        // Return the path to the built executable
-        let executable_path = format!("{crate_root}/target/x86_64-pc-windows-gnu/release/pitsu.exe");
+        let mut executable_path = format!("{crate_root}/target/x86_64-pc-windows-gnu/release/pitsu.exe");
+        if let Some(api_key) = api_key {
+            // Read in the bytes, and replace the sequence env!("PITSU_PPITSU_API_KEY_PLACEHOLDER") with the users API key
+            if !std::path::Path::new(&executable_path).exists() {
+                return Err(anyhow::anyhow!("Executable not found at {executable_path}"));
+            }
+            let mut executable_file = tokio::fs::File::open(&executable_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to open executable file: {}", e))?;
+            let mut executable_bytes = Vec::new();
+            executable_file
+                .read_to_end(&mut executable_bytes)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to read executable file: {}", e))?;
+            let api_key_placeholder = env!("PITSU_API_KEY_PLACEHOLDER");
+            let api_key_bytes = api_key.as_bytes();
+            let placeholder_bytes = api_key_placeholder.as_bytes();
+            let mut modified_bytes = Vec::new();
+            let mut start = 0;
+            while start < executable_bytes.len() {
+                if executable_bytes[start..].starts_with(placeholder_bytes) {
+                    modified_bytes.extend_from_slice(api_key_bytes);
+                    start += placeholder_bytes.len();
+                } else {
+                    modified_bytes.push(executable_bytes[start]);
+                    start += 1;
+                }
+            }
+            // Write the modified bytes to a new file in /tmp/pitsu/{api_key}/pitsu.exe
+            let binaries_path = format!("/tmp/pitsu/{api_key}/");
+            tokio::fs::create_dir_all(&binaries_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create binaries directory: {}", e))?;
+            executable_path = format!("{binaries_path}/pitsu.exe");
+            let mut modified_file = tokio::fs::File::create(&executable_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
+            modified_file
+                .write_all(&modified_bytes)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to write modified executable file: {}", e))?;
+            log::info!("Successfully created modified executable file at {executable_path}");
+        }
         Ok(PathBuf::from(executable_path))
     })
     .await?

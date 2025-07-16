@@ -20,15 +20,14 @@ pub fn setup() {
     std::panic::set_hook(Box::new(crate::dialogue::rfd_panic_dialogue));
     std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
     std::env::set_var("SEQ_API_URL", env!("SEQ_API_URL"));
-    datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid()))
-        .expect("Failed to initialize logger");
+    datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid())).expect("Failed to initialize logger");
     if CONFIG.api_key().is_empty() {
-        log::error!("PITSU_API_KEY is not set. Please set it in your environment variables.");
-        panic!("PITSU_API_KEY is not set. Please set it in your environment variables.");
+        log::error!("PITSU_API_KEY is not set. Please try to download again.");
+        panic!("PITSU_API_KEY is not set. Please try to download again.");
     }
     if CONFIG.public_url().is_empty() {
-        log::warn!("PITSU_PUBLIC_URL is not set. Please set it in your environment variables.");
-        panic!("PITSU_PUBLIC_URL is not set. Please set it in your environment variables.");
+        log::warn!("PITSU_PUBLIC_URL is not set. Please try to download again.");
+        panic!("PITSU_PUBLIC_URL is not set. Please try to download again.");
     }
 }
 
@@ -144,10 +143,7 @@ impl Config {
             .clone()
     }
     pub fn uuid(&self) -> Uuid {
-        self.user_info
-            .wait_ready()
-            .expect("Failed to wait for user info")
-            .uuid
+        self.user_info.wait_ready().expect("Failed to wait for user info").uuid
     }
     pub fn public_url(&self) -> &'static str {
         PUBLIC_URL
@@ -226,14 +222,18 @@ impl ConfigVersion {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ConfigV1 {
-    #[serde(default = "get_api_key_from_user")]
+    #[serde(default = "get_api_key")]
     api_key: Arc<str>,
     stored_repositories: HashMap<Uuid, Arc<StoredRepository>>,
 }
 
-fn get_api_key_from_user() -> Arc<str> {
-    let resp = crate::dialogue::get_api_key().expect("Failed to get API key from user");
-    resp.trim().to_string().into()
+// fn get_api_key() -> Arc<str> {
+//     let resp = crate::dialogue::get_api_key().expect("Failed to get API key from user");
+//     resp.trim().to_string().into()
+// }
+
+fn get_api_key() -> Arc<str> {
+    Arc::from(env!("PITSU_API_KEY_PLACEHOLDER"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,9 +308,7 @@ impl<T: Debug + DeserializeOwned + Send + Sync + 'static> Pending<T> {
                     if let Err(e) = sender.send(Ok(Arc::new(value))) {
                         log::error!("Failed to send value through channel: {e}");
                     }
-                } else if let Err(e) = sender.send(Err(Arc::new(anyhow::anyhow!(
-                    "Failed to parse response as JSON"
-                )))) {
+                } else if let Err(e) = sender.send(Err(Arc::new(anyhow::anyhow!("Failed to parse response as JSON")))) {
                     log::error!("Failed to send error through channel: {e}");
                 }
             }
@@ -322,11 +320,7 @@ impl<T: Debug + DeserializeOwned + Send + Sync + 'static> Pending<T> {
     }
 
     fn get_cached(&self) -> Result<Option<Arc<T>>, Arc<anyhow::Error>> {
-        if let Some(value) = &*self
-            .value
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Mutex lock failed"))?
-        {
+        if let Some(value) = &*self.value.lock().map_err(|_| anyhow::anyhow!("Mutex lock failed"))? {
             match value.clone() {
                 Ok(arc_value) => Ok(Some(arc_value.clone())),
                 Err(err) => Err(err),
@@ -336,10 +330,7 @@ impl<T: Debug + DeserializeOwned + Send + Sync + 'static> Pending<T> {
         }
     }
 
-    fn set_cached(
-        &self,
-        value: Result<Arc<T>, Arc<anyhow::Error>>,
-    ) -> Result<(), Arc<anyhow::Error>> {
+    fn set_cached(&self, value: Result<Arc<T>, Arc<anyhow::Error>>) -> Result<(), Arc<anyhow::Error>> {
         let mut value_lock = self
             .value
             .lock()
@@ -362,9 +353,7 @@ impl<T: Debug + DeserializeOwned + Send + Sync + 'static> Pending<T> {
                 self.get_cached()
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err(Arc::new(anyhow::anyhow!("Channel disconnected")))
-            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(Arc::new(anyhow::anyhow!("Channel disconnected"))),
         }
     }
 
@@ -402,8 +391,7 @@ pub mod icons {
     static IMAGE_SIZE: u32 = 1024;
     lazy_static! {
         pub static ref WINDOW_ICON: Arc<IconData> = {
-            let svg = resvg::usvg::Tree::from_str(&SVG, &resvg::usvg::Options::default())
-                .expect("Failed to parse SVG");
+            let svg = resvg::usvg::Tree::from_str(&SVG, &resvg::usvg::Options::default()).expect("Failed to parse SVG");
 
             let mut pixmap = Pixmap::new(IMAGE_SIZE, IMAGE_SIZE).expect("Failed to create pixmap");
             resvg::render(&svg, Transform::default(), &mut pixmap.as_mut());
@@ -418,19 +406,17 @@ pub mod icons {
 
 pub fn get_request(url: &str) -> Request {
     let mut request = Request::get(url);
-    request.headers.insert(
-        "Authorization",
-        format!("Bearer {}", CONFIG.api_key().as_ref()),
-    );
+    request
+        .headers
+        .insert("Authorization", format!("Bearer {}", CONFIG.api_key()));
     request
 }
 
 pub fn post_request(url: &str, body: Value) -> Request {
     let mut request: Request = Request::json(url, &body).expect("Failed to create JSON request");
-    request.headers.insert(
-        "Authorization",
-        format!("Bearer {}", CONFIG.api_key().as_ref()),
-    );
+    request
+        .headers
+        .insert("Authorization", format!("Bearer {}", CONFIG.api_key()));
     request.method = "POST".to_string();
     request
 }
@@ -438,9 +424,8 @@ pub fn post_request(url: &str, body: Value) -> Request {
 pub fn delete_request(url: &str) -> Request {
     let mut request = Request::get(url);
     request.method = "DELETE".to_string();
-    request.headers.insert(
-        "Authorization",
-        format!("Bearer {}", CONFIG.api_key().as_ref()),
-    );
+    request
+        .headers
+        .insert("Authorization", format!("Bearer {}", CONFIG.api_key()));
     request
 }
