@@ -1537,7 +1537,11 @@ async fn build_executable() -> Result<PathBuf> {
         //         .to_string()
         // };
         let version_number = get_client_version()?;
-        std::env::set_var("VERSION_NUMBER", serde_json::to_string(&version_number)?);
+        // std::env::set_var("VERSION_NUMBER", serde_json::to_string(&version_number)?);
+        std::env::set_var("VERSION_MAJOR", version_number.major.to_string());
+        std::env::set_var("VERSION_MINOR", version_number.minor.to_string());
+        std::env::set_var("VERSION_PATCH", version_number.patch.to_string());
+        std::env::set_var("VERSION_HASH", version_number.folder_hash);
         // Move to {crate_root}/local
         let crate_root = format!(
             "{}/../",
