@@ -1752,21 +1752,23 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
                     start += 1;
                 }
             }
-            // Write the modified bytes to a new file in /tmp/pitsu/{api_key}/pitsu.exe
-            let binaries_path = format!("/tmp/pitsu/{api_key}/");
+            // Write the modified bytes to a new file in /tmp/pitsu/pitsu.{api_key}.exe
+            let binaries_path = "/tmp/pitsu/".to_string();
             tokio::fs::create_dir_all(&binaries_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create binaries directory: {}", e))?;
-            executable_path = format!("{binaries_path}/pitsu.exe");
+            let og_executable_path = executable_path.clone();
+            executable_path = format!("{binaries_path}/pitsu.{api_key}.exe");
             tokio::fs::remove_file(&executable_path).await.ok(); // Ignore error if file doesn't exist
-            let mut modified_file = tokio::fs::File::create(&executable_path)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
-            modified_file
-                .write_all(&modified_bytes)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to write modified executable file: {}", e))?;
-            log::info!("Successfully created modified executable file at {executable_path}");
+            tokio::fs::copy(&og_executable_path, &executable_path).await?;
+            // let mut modified_file = tokio::fs::File::create(&executable_path)
+            //     .await
+            //     .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
+            // modified_file
+            //     .write_all(&modified_bytes)
+            //     .await
+            //     .map_err(|e| anyhow::anyhow!("Failed to write modified executable file: {}", e))?;
+            // log::info!("Successfully created modified executable file at {executable_path}");
         }
         Ok(PathBuf::from(executable_path))
     })
