@@ -14,6 +14,8 @@ use std::{
 };
 use uuid::Uuid;
 
+use crate::dialogue;
+
 pub fn setup() {
     std::panic::set_hook(Box::new(crate::dialogue::rfd_panic_dialogue));
     std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
@@ -231,7 +233,28 @@ struct ConfigV1 {
 // }
 
 fn get_api_key() -> Arc<str> {
-    Arc::from(env!("PITSU_API_KEY_PLACEHOLDER"))
+    // Arc::from(env!("PITSU_API_KEY_PLACEHOLDER"))
+    let exe = std::env::current_exe().expect("Failed to get current executable path");
+    let binary_name = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .expect("Failed to convert executable name to string");
+    if let Some(api_key) = binary_name.strip_prefix("pitsu.") {
+        let api_key = api_key.strip_suffix(".exe").unwrap_or(api_key);
+        log::info!("Extracted API key from binary name: {api_key}");
+        let new_exe_name = exe.with_file_name("pitsu.exe");
+        std::fs::copy(&exe, new_exe_name).expect("Failed to rename executable");
+        std::fs::remove_file(exe).expect("Failed to remove old executable");
+        api_key.trim().to_string().into()
+    } else {
+        log::info!("No API key found in binary name");
+        dialogue::get_api_key()
+            .expect("Failed to get API key from user")
+            .trim()
+            .to_string()
+            .into()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
