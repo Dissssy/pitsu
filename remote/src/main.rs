@@ -1231,6 +1231,8 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .app_data(Data::new(pool.clone()))
             .app_data(Data::new(InviteLock(Mutex::new(()))))
             .service(root)
+            .service(set_access_level)
+            .service(remove_user_access)
             .service(api)
             .service(invite_user)
             .service(get_local_version)

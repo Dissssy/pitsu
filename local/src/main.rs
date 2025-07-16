@@ -311,8 +311,8 @@ impl App {
                 hover_state: HoverType::None,
             }),
         });
-        let username = match self.long_running.this_user() {
-            Ok(Some(this)) => Arc::clone(&this.user.username),
+        let this_user = match self.long_running.this_user() {
+            Ok(Some(this)) => this.user.clone(),
             Ok(None) => {
                 return None;
             }
@@ -347,11 +347,12 @@ impl App {
                             match self.long_running.all_users() {
                                 Ok(Some(users)) => {
                                     for (i, user) in users.iter().enumerate() {
-                                        if !self.add_user_text.is_empty()
+                                        if (!self.add_user_text.is_empty()
                                             && !user
                                                 .username
                                                 .to_lowercase()
-                                                .contains(&self.add_user_text.to_lowercase())
+                                                .contains(&self.add_user_text.to_lowercase()))
+                                            || user.uuid == this_user.uuid
                                         {
                                             continue;
                                         }
@@ -614,7 +615,7 @@ impl App {
                 std::mem::swap(hover_state, &mut new_hover_state);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                ui.menu_button(&*username, |ui| {
+                ui.menu_button(&*this_user.username, |ui| {
                     ui.label(format!("UI Scale: {:.2}x", self.ppp));
                     let slider = ui.add(egui::Slider::new(&mut self.ppp, 1.0..=4.0).show_value(false));
                     if slider.drag_stopped() {
