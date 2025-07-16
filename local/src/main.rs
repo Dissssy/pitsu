@@ -174,6 +174,9 @@ impl eframe::App for App {
         match self.long_running.remote_update_bytes(true) {
             Ok(Some(bytes)) => {
                 self_update(bytes.to_vec()).expect("Failed to update Pitsu");
+                std::process::Command::new(std::env::current_exe().expect("Failed to get current executable path"))
+                    .spawn()
+                    .expect("Failed to spawn new Pitsu process");
                 std::process::exit(0);
             }
             Ok(None) => {
@@ -776,7 +779,7 @@ impl App {
                 // // Run that with --update
                 // // std::process::Command::new(&this_exe)
                 // //     .arg("--update")
-                // //     .spawn()
+                // //     .spawn()f
                 // //     .expect("Failed to spawn update process");
                 // std::process::Child::spawn()
                 //     .arg(&this_exe)
@@ -785,6 +788,7 @@ impl App {
                 //     .expect("Failed to spawn update process");
                 // std::process::exit(0);
                 self.long_running.remote_update_bytes(false).ok();
+                self.updating = true;
             }
         } else {
             ui.spinner();
