@@ -429,3 +429,12 @@ pub fn delete_request(url: &str) -> Request {
         .insert("Authorization", format!("Bearer {}", CONFIG.api_key()));
     request
 }
+
+pub fn delete_request_with_body(url: &str, body: Value) -> Request {
+    let mut request = Request::json(url, &body).expect("Failed to create JSON request");
+    request.method = "DELETE".to_string();
+    request
+        .headers
+        .insert("Authorization", format!("Bearer {}", CONFIG.api_key()));
+    request
+}

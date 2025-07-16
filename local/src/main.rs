@@ -170,6 +170,20 @@ pub enum EditState {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        match self.long_running.resolve_user_action() {
+            Ok(Some(uuid)) => {
+                self.long_running
+                    .reload_repository(uuid)
+                    .expect("Failed to reload repository after user action");
+                self.long_running.reset_user_action();
+            }
+            Ok(None) => {
+                // No user action to resolve
+            }
+            Err(e) => {
+                log::error!("Failed to resolve user action: {e}");
+            }
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut new_state = self.header(ui, ctx, frame);
             match self.state {
@@ -338,62 +352,63 @@ impl App {
                     ui.label("Settings");
                 }
                 AppState::RepositoryDetails { uuid, hover_state } => {
-                    if self.add_user_modal {
-                        let modal = egui::Modal::new(Id::new("add_user_modal")).show(ctx, |ui| {
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                ui.label("Add User to Repository");
-                            });
-                            ui.text_edit_singleline(&mut self.add_user_text);
-                            match self.long_running.all_users() {
-                                Ok(Some(users)) => {
-                                    for (i, user) in users.iter().enumerate() {
-                                        if (!self.add_user_text.is_empty()
-                                            && !user
-                                                .username
-                                                .to_lowercase()
-                                                .contains(&self.add_user_text.to_lowercase()))
-                                            || user.uuid == this_user.uuid
-                                        {
-                                            continue;
-                                        }
-                                        if i >= 10 {
-                                            ui.label("... (truncated, please refine your search)");
-                                            break;
-                                        }
-                                        // ui.label(format!("{}", user.username));
-                                        ui.horizontal(|ui| {
-                                            let button = ui.button(&*user.username);
-                                            if button.hovered() {
-                                                ui.label(nerdfonts::ACCOUNT_PLUS);
-                                            }
-                                            if button.clicked() {
-                                                ui.close();
-                                                self.long_running.add_user_to_repository(
-                                                    uuid,
-                                                    UserWithAccess {
-                                                        user: user.clone(),
-                                                        access_level: AccessLevel::Read,
-                                                    },
-                                                );
-                                            }
-                                        });
-                                    }
-                                }
-                                Ok(None) => {
-                                    ui.spinner();
-                                }
-                                Err(e) => {
-                                    ui.label(format!("Error fetching users: {e}"));
-                                }
-                            }
-                        });
-                        if modal.backdrop_response.clicked() {
-                            self.add_user_modal = false;
-                            self.add_user_text.clear();
-                        }
-                    }
                     new_hover_state = hover_state;
                     if let Some(repo) = self.long_running.get_repository(uuid).unwrap_or(None) {
+                        if self.add_user_modal {
+                            let modal = egui::Modal::new(Id::new("add_user_modal")).show(ctx, |ui| {
+                                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                    ui.label("Add User to Repository");
+                                });
+                                ui.text_edit_singleline(&mut self.add_user_text);
+                                match self.long_running.all_users() {
+                                    Ok(Some(users)) => {
+                                        for (i, user) in users.iter().enumerate() {
+                                            if (!self.add_user_text.is_empty()
+                                                && !user
+                                                    .username
+                                                    .to_lowercase()
+                                                    .contains(&self.add_user_text.to_lowercase()))
+                                                || user.uuid == this_user.uuid
+                                                || repo.users.iter().any(|u| u.user.uuid == user.uuid)
+                                            {
+                                                continue;
+                                            }
+                                            if i >= 10 {
+                                                ui.label("... (truncated, please refine your search)");
+                                                break;
+                                            }
+                                            // ui.label(format!("{}", user.username));
+                                            ui.horizontal(|ui| {
+                                                let button = ui.button(&*user.username);
+                                                if button.hovered() {
+                                                    ui.label(nerdfonts::ACCOUNT_PLUS);
+                                                }
+                                                if button.clicked() {
+                                                    ui.close();
+                                                    self.long_running.set_user_access_level(
+                                                        uuid,
+                                                        UserWithAccess {
+                                                            user: user.clone(),
+                                                            access_level: AccessLevel::Read,
+                                                        },
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        ui.spinner();
+                                    }
+                                    Err(e) => {
+                                        ui.label(format!("Error fetching users: {e}"));
+                                    }
+                                }
+                            });
+                            if modal.backdrop_response.clicked() {
+                                self.add_user_modal = false;
+                                self.add_user_text.clear();
+                            }
+                        }
                         ui.label(format!("{}", repo.name));
                         if ui
                             .menu_button(nerdfonts::ACCOUNT, |ui| {
@@ -432,7 +447,10 @@ impl App {
                                                         .on_hover_text("Remove user")
                                                         .clicked()
                                                     {
-                                                        todo!("Remove user functionality not implemented yet");
+                                                        ui.close();
+                                                        self.long_running
+                                                            .delete_user_access_level(uuid, user.user.uuid)
+                                                            .expect("Failed to remove user access level");
                                                     }
                                                 });
                                             }
@@ -440,7 +458,49 @@ impl App {
                                                 ui.add(egui::Label::new(&*user.user.username).extend());
                                             });
                                             row.col(|ui| {
-                                                ui.add(egui::Label::new(format!("{:?}", user.access_level)).extend());
+                                                if this_user.uuid == user.user.uuid
+                                                    || user.access_level == AccessLevel::Owner
+                                                    || (user.access_level == AccessLevel::Admin
+                                                        && repo.access_level == AccessLevel::Admin)
+                                                    || repo.access_level < AccessLevel::Admin
+                                                {
+                                                    ui.add(
+                                                        egui::Label::new(format!("{:?}", user.access_level)).extend(),
+                                                    );
+                                                } else {
+                                                    ui.menu_button(format!("{:?}", user.access_level), |ui| {
+                                                        if ui.button("Read").clicked() {
+                                                            self.long_running.set_user_access_level(
+                                                                uuid,
+                                                                UserWithAccess {
+                                                                    user: user.user.clone(),
+                                                                    access_level: AccessLevel::Read,
+                                                                },
+                                                            );
+                                                        }
+                                                        if ui.button("Write").clicked() {
+                                                            self.long_running.set_user_access_level(
+                                                                uuid,
+                                                                UserWithAccess {
+                                                                    user: user.user.clone(),
+                                                                    access_level: AccessLevel::Write,
+                                                                },
+                                                            );
+                                                        }
+                                                        if repo.access_level == AccessLevel::Owner {
+                                                            // do not collapse
+                                                            if ui.button("Admin").clicked() {
+                                                                self.long_running.set_user_access_level(
+                                                                    uuid,
+                                                                    UserWithAccess {
+                                                                        user: user.user.clone(),
+                                                                        access_level: AccessLevel::Admin,
+                                                                    },
+                                                                );
+                                                            }
+                                                        }
+                                                    });
+                                                }
                                             });
                                         });
                                     }

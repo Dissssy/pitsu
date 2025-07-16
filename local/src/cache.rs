@@ -7,7 +7,7 @@ use pitsu_lib::{ChangeType, FileUpload, RemoteRepository, ThisUser, UploadFile, 
 use uuid::Uuid;
 
 use crate::{
-    config::{delete_request, get_request, post_request, CONFIG, PUBLIC_URL},
+    config::{delete_request, delete_request_with_body, get_request, post_request, CONFIG, PUBLIC_URL},
     pitignore::Pitignore,
     Repository,
 };
@@ -20,6 +20,7 @@ pub struct RequestCache {
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
     repositories: HashMap<Uuid, PendingRequest<Arc<RemoteRepository>>>,
     stored_repositories: HashMap<Uuid, PendingRequest<Option<Arc<Repository>>>>,
+    user_action: Option<PendingRequest<Uuid>>,
 }
 
 #[derive(Debug)]
@@ -54,6 +55,7 @@ impl RequestCache {
             remote_version_number: None,
             repositories: HashMap::new(),
             stored_repositories: HashMap::new(),
+            user_action: None,
         }
     }
     pub fn remote_version_number(&mut self) -> PendingResponse<Arc<VersionNumber>> {
@@ -477,27 +479,165 @@ impl RequestCache {
         // if neither upload nor download have a response, return Ok(None)
         Ok(None)
     }
-    pub fn add_user_to_repository(&self, repository_uuid: Uuid, user: UserWithAccess) {
-        ehttp::fetch(
-            post_request(
-                &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
-                serde_json::to_value(user).expect("Failed to serialize user"),
-            ),
-            move |response| {
-                let response = match response {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        log::error!("Failed to add user to repository: {e}");
-                        return;
-                    }
-                };
-                if response.status != 200 {
-                    log::error!("Failed to add user to repository: {}", response.status);
-                    return;
+    pub fn set_user_access_level(&mut self, repository_uuid: Uuid, user: UserWithAccess) {
+        // ehttp::fetch(
+        //     post_request(
+        //         &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
+        //         serde_json::to_value(user).expect("Failed to serialize user"),
+        //     ),
+        //     move |response| {
+        //         let response = match response {
+        //             Ok(resp) => resp,
+        //             Err(e) => {
+        //                 log::error!("Failed to set user access level: {e}");
+        //                 return;
+        //             }
+        //         };
+        //         if response.status != 200 {
+        //             log::error!("Failed to set user access level: {}", response.status);
+        //             return;
+        //         }
+        //         log::info!("User access level set successfully");
+        //     },
+        // );
+        match &mut self.user_action {
+            None => {
+                let (sender, receiver) = mpsc::channel();
+                // std::thread::spawn(move || {
+                ehttp::fetch(
+                    post_request(
+                        &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
+                        serde_json::to_value(user).expect("Failed to serialize user"),
+                    ),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to set user access level: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 200 {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to set user access level: {}",
+                                    response.status
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        sender.send(Ok(repository_uuid)).unwrap_or_else(|e| {
+                            log::error!("Failed to send user access level set response: {e}");
+                        });
+                    },
+                );
+                // });
+                self.user_action = Some(PendingRequest::Pending(receiver));
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => {
+                    self.user_action = Some(PendingRequest::Response(result));
                 }
-                log::info!("User added to repository successfully");
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.user_action = Some(PendingRequest::Response(Err(Arc::from(
+                        "Request channel disconnected unexpectedly".to_string(),
+                    ))));
+                }
             },
-        );
+            Some(PendingRequest::Response(_)) => {}
+        }
+    }
+    pub fn resolve_user_action(&mut self) -> PendingResponse<Uuid> {
+        if let Some(user_action) = &mut self.user_action {
+            match user_action {
+                PendingRequest::Pending(ref pending) => match pending.try_recv() {
+                    Ok(result) => {
+                        *user_action = PendingRequest::Response(result);
+                        return Ok(None);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        *user_action = PendingRequest::Response(Err(Arc::from(
+                            "Request channel disconnected unexpectedly".to_string(),
+                        )));
+                        return Ok(None);
+                    }
+                },
+                PendingRequest::Response(ref result) => {
+                    return result.clone().map(Some);
+                }
+            }
+        }
+        Ok(None)
+    }
+    pub fn delete_user_access_level(&mut self, repository_uuid: Uuid, user_uuid: Uuid) -> PendingResponse<Uuid> {
+        match self.user_action {
+            None => {
+                let (sender, receiver) = mpsc::channel();
+                self.user_action = Some(PendingRequest::Pending(receiver));
+                ehttp::fetch(
+                    delete_request_with_body(
+                        &format!("{PUBLIC_URL}/{repository_uuid}/.pit/user/access"),
+                        serde_json::to_value(user_uuid).expect("Failed to serialize user UUID"),
+                    ),
+                    move |response| {
+                        let response = match response {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                sender
+                                    .send(Err(Arc::from(format!("Failed to remove user access level: {e}"))))
+                                    .unwrap_or_else(|e| {
+                                        log::error!("Failed to send error response: {e}");
+                                    });
+                                return;
+                            }
+                        };
+                        if response.status != 200 {
+                            sender
+                                .send(Err(Arc::from(format!(
+                                    "Failed to remove user access level: {}",
+                                    response.status
+                                ))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                        sender.send(Ok(repository_uuid)).unwrap_or_else(|e| {
+                            log::error!("Failed to send user access level removed response: {e}");
+                        });
+                    },
+                );
+            }
+            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+                Ok(result) => {
+                    self.user_action = Some(PendingRequest::Response(result));
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.user_action = Some(PendingRequest::Response(Err(Arc::from(
+                        "Request channel disconnected unexpectedly".to_string(),
+                    ))));
+                    return Ok(None);
+                }
+            },
+            Some(PendingRequest::Response(ref result)) => {
+                return result.clone().map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn reset_user_action(&mut self) {
+        self.user_action = None;
     }
 }
 

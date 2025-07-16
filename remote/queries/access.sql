@@ -7,9 +7,12 @@
 --     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 -- );
 
---! create
+--! create_or_update
 INSERT INTO Access (repository_uuid, user_uuid, access_level)
-    VALUES (:repository_uuid, :user_uuid, :access_level);
+    VALUES (:repository_uuid, :user_uuid, :access_level)
+    ON CONFLICT (repository_uuid, user_uuid)
+    DO UPDATE SET access_level = EXCLUDED.access_level,
+                  updated_at = CURRENT_TIMESTAMP;
 
 --! delete_by_user_uuid_and_repository_uuid
 DELETE FROM Access
