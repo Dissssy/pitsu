@@ -18,6 +18,23 @@ use crate::dialogue;
 
 pub fn setup() {
     std::panic::set_hook(Box::new(crate::dialogue::rfd_panic_dialogue));
+    let exe = std::env::current_exe().expect("Failed to get current executable path");
+    let binary_name = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .expect("Failed to convert executable name to string");
+    if let Some(api_key) = binary_name.strip_prefix("pitsu.") {
+        let api_key = api_key.strip_suffix(".exe").unwrap_or(api_key);
+        dialogue::rfd_ok_dialogue(&format!("Extracted API key: {api_key}")).ok();
+        log::info!("Extracted API key from binary name: {api_key}");
+        let new_exe_name = exe.with_file_name("pitsu.exe");
+        std::fs::rename(exe, new_exe_name).expect("Failed to rename executable");
+        // std::env::set_var("PITSU_API_KEY", api_key.trim());
+        unsafe {
+            SET_API_KEY = Some(api_key.to_string());
+        }
+    }
     std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
     std::env::set_var("SEQ_API_URL", env!("SEQ_API_URL"));
     datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid())).expect("Failed to initialize logger");
@@ -223,8 +240,13 @@ impl ConfigVersion {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ConfigV1 {
     #[serde(default = "get_api_key")]
+    #[serde(skip_serializing_if = "arc_str_empty")]
     api_key: Arc<str>,
     stored_repositories: HashMap<Uuid, Arc<StoredRepository>>,
+}
+
+fn arc_str_empty(s: &Arc<str>) -> bool {
+    s.is_empty()
 }
 
 // fn get_api_key() -> Arc<str> {
@@ -232,20 +254,16 @@ struct ConfigV1 {
 //     resp.trim().to_string().into()
 // }
 
+pub static mut SET_API_KEY: Option<String> = None;
+
 fn get_api_key() -> Arc<str> {
     // Arc::from(env!("PITSU_API_KEY_PLACEHOLDER"))
-    let exe = std::env::current_exe().expect("Failed to get current executable path");
-    let binary_name = exe
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .expect("Failed to convert executable name to string");
-    if let Some(api_key) = binary_name.strip_prefix("pitsu.") {
-        let api_key = api_key.strip_suffix(".exe").unwrap_or(api_key);
-        log::info!("Extracted API key from binary name: {api_key}");
-        let new_exe_name = exe.with_file_name("pitsu.exe");
-        std::fs::rename(exe, new_exe_name).expect("Failed to rename executable");
-        api_key.trim().to_string().into()
+    if let Some(val) = unsafe {
+        #[allow(static_mut_refs)]
+        SET_API_KEY.clone()
+    } {
+        log::info!("Using API key from environment variable");
+        Arc::from(val)
     } else {
         log::info!("No API key found in binary name");
         dialogue::get_api_key()

@@ -1,7 +1,7 @@
 #![warn(clippy::todo)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 use colors_transform::Color;
 use eframe::egui::{self, FontData, Id};
@@ -10,7 +10,7 @@ use self_update::self_replace;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::config::{get_request, LocalRepository, CONFIG, MAX_PATH_LENGTH, PUBLIC_URL};
+use crate::config::{LocalRepository, CONFIG, MAX_PATH_LENGTH};
 mod cache;
 mod config;
 mod dialogue;
@@ -18,70 +18,6 @@ mod nerdfonts;
 
 fn main() -> anyhow::Result<()> {
     config::setup();
-    // if the program is run with the --update flag, we will update the application at this point. we need to get the old file location which will be "pitsu.exe" in the folder where the executable is located.
-    // if std::env::args().any(|arg| arg == "--update") {
-    //     let this_exe = std::env::current_exe().expect("Failed to get current executable path");
-    //     let new_exe = this_exe.with_file_name("pitsu.exe");
-    //     let (update_sender, update_receiver) = mpsc::channel::<Result<Arc<[u8]>, Arc<str>>>();
-    //     ehttp::fetch(
-    //         get_request(&format!("{PUBLIC_URL}/api/local/update")),
-    //         move |response| {
-    //             let response = match response {
-    //                 Ok(resp) => resp,
-    //                 Err(e) => {
-    //                     update_sender
-    //                         .send(Err(Arc::from(format!("Failed to fetch update: {e}"))))
-    //                         .unwrap_or_else(|e| {
-    //                             log::error!("Failed to send error response: {e}");
-    //                         });
-    //                     return;
-    //                 }
-    //             };
-    //             if response.status != 200 {
-    //                 update_sender
-    //                     .send(Err(Arc::from(format!("Failed to fetch update: {}", response.status))))
-    //                     .unwrap_or_else(|e| {
-    //                         log::error!("Failed to send error response: {e}");
-    //                     });
-    //                 return;
-    //             }
-    //             let file = response.bytes;
-    //             update_sender.send(Ok(file.into())).unwrap_or_else(|e| {
-    //                 log::error!("Failed to send update file: {e}");
-    //             });
-    //         },
-    //     );
-    //     let update = update_receiver.recv().expect("Failed to receive update file");
-    //     let update = match update {
-    //         Ok(file) => file,
-    //         Err(e) => {
-    //             log::error!("Failed to fetch update: {e}");
-    //             return Err(anyhow::anyhow!("Failed to fetch update: {e}"));
-    //         }
-    //     };
-    //     // Delete the "old" pitsu.exe if it exists, wait a sec for it to exit just in case
-    //     std::thread::sleep(std::time::Duration::from_secs(1));
-    //     if new_exe.exists() {
-    //         std::fs::remove_file(&new_exe).expect("Failed to remove old pitsu.exe");
-    //     }
-    //     // Write the update to pitsu.exe
-    //     std::fs::write(&new_exe, &*update).expect("Failed to write update file to pitsu.exe");
-    //     // run pitsu.exe
-    //     #[allow(clippy::zombie_processes)]
-    //     std::process::Command::new(new_exe)
-    //         .spawn()
-    //         .expect("Failed to spawn new Pitsu process");
-    //     return Ok(());
-    // } else {
-    //     // If this is not an update, delete the temporary update file if it exists
-    //     let temp_update_file = std::env::current_exe()
-    //         .expect("Failed to get current executable path")
-    //         .with_file_name("pitsu_old.exe");
-    //     if temp_update_file.exists() {
-    //         std::fs::remove_file(temp_update_file).expect("Failed to remove temporary update file");
-    //     }
-    // }
-
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder {
             icon: Some(Arc::clone(&config::icons::WINDOW_ICON)),
