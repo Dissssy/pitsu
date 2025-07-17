@@ -919,7 +919,19 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
             }
         }
         if action.action_type == ActionType::DeleteFromDisk {
-            if let Some(parent) = local_path.parent() {
+            let mut o_parent = local_path.parent();
+            while let Some(parent) = o_parent {
+                // ensure parent is somewhere UNDER the repository path E.G C:/repo is the parent of C:/repo/some/dir, never delete anything OUTSIDE of the repository
+                if !parent.starts_with(&repository.local.path) {
+                    log::warn!(
+                        "Skipping deletion of parent directory {} as it is outside the repository path",
+                        parent.display()
+                    );
+                    break;
+                } else if parent == repository.local.path {
+                    // if parent is the repository path, we don't delete it
+                    break;
+                }
                 // if parent empty, remove it
                 if parent
                     .read_dir()
@@ -930,6 +942,9 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
                     if let Err(e) = std::fs::remove_dir(parent) {
                         log::warn!("Failed to remove empty directory {}: {e}", parent.display());
                     }
+                    o_parent = parent.parent();
+                } else {
+                    o_parent = None;
                 }
             }
         }
