@@ -1760,7 +1760,8 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
                 .map_err(|e| anyhow::anyhow!("Failed to read executable file: {}", e))?;
             let api_key_placeholder =
                 "________________________________PITSU_API_KEY_PLACEHOLDER________________________________";
-            let api_key_bytes = format!("{api_key}{}", "_".repeat(api_key.len() - api_key_placeholder.len()));
+            // let api_key_bytes = format!("{api_key}{}", "_".repeat(api_key.len() - api_key_placeholder.len()));
+            let api_key_bytes = format!("__________________________{api_key}___________________________");
             let placeholder_bytes = api_key_placeholder.as_bytes();
             let mut modified_bytes = Vec::new();
             let mut start = 0;
@@ -1779,7 +1780,8 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create binaries directory: {}", e))?;
             // let og_executable_path = executable_path.clone();
-            executable_path = format!("{binaries_path}/pitsu.{api_key}.exe");
+            // executable_path = format!("{binaries_path}/pitsu.{api_key}.exe");
+            executable_path = format!("{binaries_path}/pitsu.exe");
             tokio::fs::remove_file(&executable_path).await.ok(); // Ignore error if file doesn't exist
                                                                  // tokio::fs::copy(&og_executable_path, &executable_path).await?;
             let mut modified_file = tokio::fs::File::create(&executable_path)

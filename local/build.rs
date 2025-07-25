@@ -1,9 +1,10 @@
-use {std::io, winresource::WindowsResource};
+use std::io;
 
 fn main() -> io::Result<()> {
-    WindowsResource::new()
-        // This path can be absolute, or relative to your crate root.
-        .set_icon("assets/p51-03.ico")
-        .compile()?;
+    if std::env::var("CARGO_CFG_TARGET_OS").map_err(io::Error::other)? == "windows" {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/p51-03.ico");
+        res.compile()?;
+    }
     Ok(())
 }

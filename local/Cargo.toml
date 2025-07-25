@@ -3,6 +3,7 @@ name = "pitsu"
 version = "0.2.4"
 edition = "2021"
 
+
 [dependencies]
 pitsu-lib = { path = "../shared" }
 datalust_logger = { git = "https://github.com/Dissssy/datalust_logger" }
