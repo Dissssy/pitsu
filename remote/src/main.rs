@@ -1758,14 +1758,15 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
                 .read_to_end(&mut executable_bytes)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read executable file: {}", e))?;
-            let api_key_placeholder = env!("PITSU_API_KEY_PLACEHOLDER");
-            let api_key_bytes = api_key.as_bytes();
+            let api_key_placeholder =
+                "________________________________PITSU_API_KEY_PLACEHOLDER________________________________";
+            let api_key_bytes = format!("{api_key}{}", "_".repeat(api_key.len() - api_key_placeholder.len()));
             let placeholder_bytes = api_key_placeholder.as_bytes();
             let mut modified_bytes = Vec::new();
             let mut start = 0;
             while start < executable_bytes.len() {
                 if executable_bytes[start..].starts_with(placeholder_bytes) {
-                    modified_bytes.extend_from_slice(api_key_bytes);
+                    modified_bytes.extend_from_slice(api_key_bytes.as_bytes());
                     start += placeholder_bytes.len();
                 } else {
                     modified_bytes.push(executable_bytes[start]);
@@ -1777,18 +1778,18 @@ async fn build_executable(api_key: Option<Arc<str>>) -> Result<PathBuf> {
             tokio::fs::create_dir_all(&binaries_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create binaries directory: {}", e))?;
-            let og_executable_path = executable_path.clone();
+            // let og_executable_path = executable_path.clone();
             executable_path = format!("{binaries_path}/pitsu.{api_key}.exe");
             tokio::fs::remove_file(&executable_path).await.ok(); // Ignore error if file doesn't exist
-            tokio::fs::copy(&og_executable_path, &executable_path).await?;
-            // let mut modified_file = tokio::fs::File::create(&executable_path)
-            //     .await
-            //     .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
-            // modified_file
-            //     .write_all(&modified_bytes)
-            //     .await
-            //     .map_err(|e| anyhow::anyhow!("Failed to write modified executable file: {}", e))?;
-            // log::info!("Successfully created modified executable file at {executable_path}");
+                                                                 // tokio::fs::copy(&og_executable_path, &executable_path).await?;
+            let mut modified_file = tokio::fs::File::create(&executable_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create modified executable file: {}", e))?;
+            modified_file
+                .write_all(&modified_bytes)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to write modified executable file: {}", e))?;
+            log::info!("Successfully created modified executable file at {executable_path}");
         }
         Ok(PathBuf::from(executable_path))
     })

@@ -16,7 +16,7 @@ INVITE_CODE_SUFFIX = "your-invite-code-secret-end"
 INVITE_CODE_PREFIX = "your-invite-code-secret-start"
 INVITE_CODE_ENCRYPTION_KEY = "your-invite-code-encryption-key"
 
-PITSU_API_KEY_PLACEHOLDER = "your-pitsu-api-key-placeholder"
+# PITSU_API_KEY_PLACEHOLDER = "your-pitsu-api-key-placeholder"
 
 VERSION_MAJOR = "0"
 VERSION_MINOR = "0"
