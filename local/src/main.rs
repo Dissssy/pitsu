@@ -16,6 +16,9 @@ mod config;
 mod dialogue;
 mod nerdfonts;
 
+// list of safely openable file extensions, non executable
+const OPENABLE_FILE_TYPES: &[&str] = &["txt", "md", "toml", "yaml", "json", "cfg", "ini", "me3"];
+
 fn main() -> anyhow::Result<()> {
     config::setup();
     let native_options = eframe::NativeOptions {
@@ -866,7 +869,7 @@ impl App {
         );
     }
     fn repository_info(&mut self, ui: &mut egui::Ui, stored_repo: &Repository) {
-        let display_path = stored_repo.local.path.display().to_string();
+        let display_path = stored_repo.local.path.to_string_lossy().replace("\\", "/");
         ui.menu_button(
             if display_path.len() > MAX_PATH_LENGTH {
                 format!("Path: ...{}", &display_path[display_path.len() - MAX_PATH_LENGTH + 3..])
@@ -1136,14 +1139,17 @@ impl App {
                 header.col(|ui| {
                     // ui.add(egui::Label::new("File Name").extend());
                     if ui
-                        .button(egui::RichText::new(format!(
-                            "File Name {}",
-                            match self.sort.local_files {
-                                LocalSort::Name => nerdfonts::SORT_ALPHABETICAL_ASCENDING,
-                                LocalSort::NameReverse => nerdfonts::SORT_ALPHABETICAL_DESCENDING,
-                                _ => "",
-                            }
-                        )))
+                        .button(egui::RichText::new(
+                            format!(
+                                "File Name {}",
+                                match self.sort.local_files {
+                                    LocalSort::Name => nerdfonts::SORT_ALPHABETICAL_ASCENDING,
+                                    LocalSort::NameReverse => nerdfonts::SORT_ALPHABETICAL_DESCENDING,
+                                    _ => "",
+                                }
+                            )
+                            .trim(),
+                        ))
                         .clicked()
                     {
                         self.sort.local_files = match self.sort.local_files {
@@ -1157,32 +1163,24 @@ impl App {
         // if sort_now {
         let mut files = stored_repo.local.folder.files();
         match self.sort.local_files {
-            LocalSort::Size => {
-                files.sort_by(|(_, size_a), (_, size_b)| size_a.cmp(size_b));
-            }
-            LocalSort::SizeReverse => {
-                files.sort_by(|(_, size_a), (_, size_b)| size_b.cmp(size_a));
-            }
-            LocalSort::Name => {
-                files.sort_by(|(name_a, _), (name_b, _)| name_a.to_lowercase().cmp(&name_b.to_lowercase()));
-            }
-            LocalSort::NameReverse => {
-                files.sort_by(|(name_a, _), (name_b, _)| name_b.to_lowercase().cmp(&name_a.to_lowercase()));
-            }
+            LocalSort::Size => files.sort_by(|f, o| f.cmp_size(o)),
+            LocalSort::SizeReverse => files.sort_by(|f, o| o.cmp_size(f)),
+            LocalSort::Name => files.sort_by(|f, o| f.cmp_path(o)),
+            LocalSort::NameReverse => files.sort_by(|f, o| o.cmp_path(f)),
         }
         // }
 
         table.body(|mut body| {
             let ui = body.ui_mut();
             ui.set_width(ui.available_width());
-            for (name, size) in files {
+            for file in files {
                 body.row(20.0, |mut row| {
-                    let (size, color) = readable_size_and_color(size);
+                    let (size, color) = readable_size_and_color(file.size);
                     let will_be_deleted = {
                         if hover_state == HoverType::SyncDown {
                             diff_to_show
                                 .iter()
-                                .any(|d| d.full_path == name && d.change_type == ChangeType::OnClient)
+                                .any(|d| d.full_path == file.full_path && d.change_type == ChangeType::OnClient)
                         } else {
                             false
                         }
@@ -1199,13 +1197,48 @@ impl App {
                     });
                     row.col(|ui| {
                         // ui.add(egui::Label::new(&*name).extend());
+                        // let clicked = if will_be_deleted {
+                        //     ui.add(
+                        //         egui::Button::new(
+                        //             egui::RichText::new(&*file.full_path)
+                        //                 .color(egui::Color32::RED)
+                        //                 .strikethrough(),
+                        //         )
+                        //         .fill(egui::Color32::DARK_GRAY)
+                        //         .wrap_mode(egui::TextWrapMode::Extend),
+                        //     )
+                        //     .clicked()
+                        // } else {
+                        //     ui.add(
+                        //         egui::Button::new(&*file.full_path)
+                        //             .fill(egui::Color32::DARK_GRAY)
+                        //             .wrap_mode(egui::TextWrapMode::Extend),
+                        //     )
+                        //     .clicked()
+                        // };
+                        // if clicked {
+                        //     confirm_and_open(&format!(
+                        //         "{}/{}",
+                        //         stored_repo.local.path.to_string_lossy(),
+                        //         file.full_path
+                        //     ))
+                        //     .expect("Failed to open file");
+                        // }
+                        let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(&*name).color(egui::Color32::RED).strikethrough())
-                                    .extend(),
-                            );
+                            rich_text = rich_text.color(egui::Color32::RED);
+                        }
+                        if OPENABLE_FILE_TYPES.iter().any(|ext| file.full_path.ends_with(ext)) {
+                            if ui
+                                .add(egui::Button::new(rich_text).wrap_mode(egui::TextWrapMode::Extend))
+                                .clicked()
+                            {
+                                if let Err(e) = confirm_and_open(&file.full_path) {
+                                    dialogue::rfd_ok_dialogue(&format!("Failed to open file:\n{e}")).ok();
+                                }
+                            }
                         } else {
-                            ui.add(egui::Label::new(&*name).extend());
+                            ui.add(egui::Label::new(rich_text).extend());
                         }
                     });
                 });
@@ -1488,5 +1521,12 @@ fn self_update(bytes: Vec<u8>) -> Result<(), anyhow::Error> {
     log::info!("New executable written to {}", new_exe.display());
     self_replace::self_replace(new_exe).map_err(|e| anyhow::anyhow!("Failed to replace current executable: {e}"))?;
     log::info!("Successfully replaced current executable. Restarting PITSU...");
+    Ok(())
+}
+
+fn confirm_and_open(path: &str) -> Result<(), anyhow::Error> {
+    if dialogue::rfd_confirm_response(&format!("Are you sure you want to open this file?\n\n{path}"))? {
+        open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
+    }
     Ok(())
 }

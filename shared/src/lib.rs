@@ -218,12 +218,12 @@ impl RootFolder {
     //         stack: self.children.iter().collect(),
     //     }
     // }
-    pub fn files(&self) -> Vec<(Arc<str>, u64)> {
+    pub fn files(&self) -> Vec<FileOnDisk> {
         recursive_flatten(&self.children, "".into())
     }
 }
 
-fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<(Arc<str>, u64)> {
+fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<FileOnDisk> {
     let mut result = Vec::new();
     for file in files {
         match file {
@@ -232,11 +232,29 @@ fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<(Arc<str>, u64)
                 result.extend(recursive_flatten(children, new_path));
             }
             File::File { name, hash: _, size } => {
-                result.push((format!("{path_so_far}/{name}").into(), *size));
+                result.push(FileOnDisk {
+                    full_path: format!("{path_so_far}/{name}").into(),
+                    size: *size,
+                });
             }
         }
     }
     result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileOnDisk {
+    pub full_path: Arc<str>,
+    pub size: u64,
+}
+
+impl FileOnDisk {
+    pub fn cmp_size(&self, other: &Self) -> std::cmp::Ordering {
+        self.size.cmp(&other.size)
+    }
+    pub fn cmp_path(&self, other: &Self) -> std::cmp::Ordering {
+        self.full_path.cmp(&other.full_path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
