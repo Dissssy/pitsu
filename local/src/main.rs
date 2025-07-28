@@ -1224,11 +1224,7 @@ impl App {
                         //     ))
                         //     .expect("Failed to open file");
                         // }
-                        let mut rich_text = egui::RichText::new(&format!(
-                            "{}/{}",
-                            stored_repo.local.path.to_string_lossy(),
-                            file.full_path
-                        ));
+                        let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
                         }
@@ -1237,7 +1233,11 @@ impl App {
                                 .add(egui::Button::new(rich_text).wrap_mode(egui::TextWrapMode::Extend))
                                 .clicked()
                             {
-                                if let Err(e) = confirm_and_open(&file.full_path) {
+                                if let Err(e) = confirm_and_open(&format!(
+                                    "{}{}",
+                                    stored_repo.local.path.to_string_lossy(),
+                                    file.full_path
+                                )) {
                                     dialogue::rfd_ok_dialogue(&format!("Failed to open file:\n{e}")).ok();
                                 }
                             }
