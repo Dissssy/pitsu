@@ -1224,6 +1224,7 @@ impl App {
                         //     ))
                         //     .expect("Failed to open file");
                         // }
+                        let shift_down = ui.input(|i| i.modifiers.shift);
                         let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
@@ -1233,11 +1234,19 @@ impl App {
                                 .add(egui::Button::new(rich_text).wrap_mode(egui::TextWrapMode::Extend))
                                 .clicked()
                             {
-                                if let Err(e) = confirm_and_open(&format!(
-                                    "{}{}",
-                                    stored_repo.local.path.to_string_lossy(),
-                                    file.full_path
-                                )) {
+                                if let Err(e) = if shift_down {
+                                    just_open(&format!(
+                                        "{}{}",
+                                        stored_repo.local.path.to_string_lossy(),
+                                        file.full_path
+                                    ))
+                                } else {
+                                    confirm_and_open(&format!(
+                                        "{}{}",
+                                        stored_repo.local.path.to_string_lossy(),
+                                        file.full_path
+                                    ))
+                                } {
                                     dialogue::rfd_ok_dialogue(&format!("Failed to open file:\n{e}")).ok();
                                 }
                             }
@@ -1532,5 +1541,10 @@ fn confirm_and_open(path: &str) -> Result<(), anyhow::Error> {
     if dialogue::rfd_confirm_response(&format!("Are you sure you want to open this file?\n\n{path}"))? {
         open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
     }
+    Ok(())
+}
+
+fn just_open(path: &str) -> Result<(), anyhow::Error> {
+    open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
     Ok(())
 }
