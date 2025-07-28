@@ -1224,7 +1224,11 @@ impl App {
                         //     ))
                         //     .expect("Failed to open file");
                         // }
-                        let mut rich_text = egui::RichText::new(&*file.full_path);
+                        let mut rich_text = egui::RichText::new(&format!(
+                            "{}/{}",
+                            stored_repo.local.path.to_string_lossy(),
+                            file.full_path
+                        ));
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
                         }
