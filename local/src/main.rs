@@ -1228,6 +1228,8 @@ impl App {
                         let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
+                        } else if stored_repo.local_pitignore.is_ignored(&file.full_path) {
+                            rich_text = rich_text.color(egui::Color32::DARK_GRAY);
                         }
                         if OPENABLE_FILE_TYPES.iter().any(|ext| file.full_path.ends_with(ext)) {
                             if ui

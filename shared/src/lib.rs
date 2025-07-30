@@ -277,6 +277,15 @@ pub enum ChangeType {
     Modified,
 }
 
+impl ChangeType {
+    pub fn is_on_client(&self) -> bool {
+        matches!(self, ChangeType::OnClient | ChangeType::Modified)
+    }
+    pub fn is_on_server(&self) -> bool {
+        matches!(self, ChangeType::OnServer | ChangeType::Modified)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,43 +732,77 @@ impl Pitignore {
         // Iterate over the patterns and filter the diffs, if a diff matches any negated pattern then it WILL NOT be removed, otherwise if it matches any non-negated pattern it will be removed.
         let mut new = Vec::new();
         for diff in Arc::clone(diffs).iter() {
-            let mut should_remove = false;
-            let mut matches_negated = false;
-            for (_index, pattern) in &self.patterns {
-                let mut both_match = true;
-                if let Some(starts_with) = &pattern.starts_with {
-                    if !diff
-                        .full_path
-                        .trim_start_matches("/")
-                        .starts_with(starts_with.trim_start_matches("/"))
-                    {
-                        both_match = false;
-                    }
+            // let mut should_remove = false;
+            // let mut matches_negated = false;
+            // for (_index, pattern) in &self.patterns {
+            //     let mut both_match = true;
+            //     if let Some(starts_with) = &pattern.starts_with {
+            //         if !diff
+            //             .full_path
+            //             .trim_start_matches("/")
+            //             .starts_with(starts_with.trim_start_matches("/"))
+            //         {
+            //             both_match = false;
+            //         }
+            //     }
+            //     if let Some(ends_with) = &pattern.ends_with {
+            //         if !diff
+            //             .full_path
+            //             .trim_start_matches("/")
+            //             .ends_with(ends_with.trim_start_matches("/"))
+            //         {
+            //             both_match = false;
+            //         }
+            //     }
+            //     if both_match {
+            //         if pattern.negated {
+            //             matches_negated = true;
+            //         } else {
+            //             should_remove = true;
+            //         }
+            //     }
+            // }
+            // if !matches_negated && should_remove {
+            //     continue;
+            // } else {
+            //     // If it matches a negated pattern, we keep it, otherwise we remove it.
+            //     new.push(diff.clone());
+            // }
+            if self.is_ignored(&diff.full_path) {
+                if !diff.change_type.is_on_client() {
+                    // If the diff is not on the client, we keep it
+                    new.push(diff.clone());
                 }
-                if let Some(ends_with) = &pattern.ends_with {
-                    if !diff
-                        .full_path
-                        .trim_start_matches("/")
-                        .ends_with(ends_with.trim_start_matches("/"))
-                    {
-                        both_match = false;
-                    }
-                }
-                if both_match {
-                    if pattern.negated {
-                        matches_negated = true;
-                    } else {
-                        should_remove = true;
-                    }
-                }
-            }
-            if !matches_negated && should_remove {
-                continue;
             } else {
-                // If it matches a negated pattern, we keep it, otherwise we remove it.
+                // If it is not ignored, we keep it
                 new.push(diff.clone());
             }
         }
         new.into()
+    }
+    pub fn is_ignored(&self, path: &str) -> bool {
+        for (_index, pattern) in &self.patterns {
+            let mut both_match = true;
+            if let Some(starts_with) = &pattern.starts_with {
+                if !path
+                    .trim_start_matches("/")
+                    .starts_with(starts_with.trim_start_matches("/"))
+                {
+                    both_match = false;
+                }
+            }
+            if let Some(ends_with) = &pattern.ends_with {
+                if !path
+                    .trim_start_matches("/")
+                    .ends_with(ends_with.trim_start_matches("/"))
+                {
+                    both_match = false;
+                }
+            }
+            if both_match {
+                return true;
+            }
+        }
+        false
     }
 }

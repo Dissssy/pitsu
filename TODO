@@ -4,4 +4,3 @@ info sent back to the ui about pending uploads, downloads, etc
 Option to update on crash if there's an update available or maybe just make sure the update button can always be there no matter what
 confirmation dialog setting with temporary skipping while holding shift
 .pitexecute which tracks patterns to executable files and allows them to individually be clicked in app
-Grey out entries that are matched by .pitignore
