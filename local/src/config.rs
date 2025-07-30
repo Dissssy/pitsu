@@ -221,6 +221,21 @@ impl Config {
         log::info!("Stored repository added: {}", stored_repo.path.display());
         Ok(())
     }
+    pub fn skip_confirmation(&self) -> bool {
+        let config = self
+            .config
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Failed to lock config: {}", e))
+            .expect("Failed to lock config");
+        config.skip_confirmation
+    }
+    pub fn toggle_skip_confirmation(&self) {
+        let mut config = self.config.lock().expect("Failed to lock config");
+        config.skip_confirmation = !config.skip_confirmation;
+        if let Err(e) = self.save() {
+            log::error!("Failed to save configuration after toggling skip confirmation: {e}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +260,8 @@ struct ConfigV1 {
     #[serde(skip_serializing_if = "arc_str_empty")]
     api_key: Arc<str>,
     stored_repositories: HashMap<Uuid, Arc<StoredRepository>>,
+    #[serde(default)]
+    skip_confirmation: bool,
 }
 
 impl Default for ConfigV1 {
@@ -252,6 +269,7 @@ impl Default for ConfigV1 {
         ConfigV1 {
             api_key: get_api_key(),
             stored_repositories: HashMap::new(),
+            skip_confirmation: false,
         }
     }
 }

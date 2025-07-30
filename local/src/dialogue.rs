@@ -9,7 +9,10 @@ use eframe::{
 
 use crate::config::UserInfo;
 
-pub fn rfd_confirm_response(query: &str) -> Result<bool> {
+pub fn rfd_confirm_response(query: &str, skip: bool) -> Result<bool> {
+    if skip {
+        return Ok(true);
+    }
     let response = rfd::MessageDialog::new()
         .set_title("Confirmation")
         .set_description(query)

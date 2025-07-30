@@ -92,6 +92,7 @@ pub struct App {
     add_user_text: String,
     add_user_modal: bool,
     updating: bool,
+    skip_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +112,7 @@ pub enum EditState {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.skip_confirmation = ctx.input(|i| i.modifiers.shift || CONFIG.skip_confirmation());
         match self.long_running.remote_update_bytes(true) {
             Ok(Some(bytes)) => {
                 self_update(bytes.to_vec()).expect("Failed to update Pitsu");
@@ -347,6 +349,7 @@ impl App {
             add_user_text: String::new(),
             add_user_modal: false,
             updating: false,
+            skip_confirmation: false,
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
@@ -658,7 +661,11 @@ impl App {
                                     .on_hover_text(&hover_text)
                                 };
                                 if upload.clicked() {
-                                    if let Err(e) = self.long_running.upload_files(Arc::clone(&stored), hover_text) {
+                                    if let Err(e) = self.long_running.upload_files(
+                                        Arc::clone(&stored),
+                                        hover_text,
+                                        self.skip_confirmation,
+                                    ) {
                                         panic!("Failed to upload files: {e}");
                                     }
                                 }
@@ -716,7 +723,11 @@ impl App {
                                     .on_hover_text(&hover_text)
                                 };
                                 if download.clicked() {
-                                    if let Err(e) = self.long_running.download_files(Arc::clone(&stored), hover_text) {
+                                    if let Err(e) = self.long_running.download_files(
+                                        Arc::clone(&stored),
+                                        hover_text,
+                                        self.skip_confirmation,
+                                    ) {
                                         panic!("Failed to download files: {e}");
                                     }
                                 }
@@ -763,6 +774,10 @@ impl App {
                     }
                     if slider.changed() && (self.ppp - self.ppp.round()).abs() < 0.1 {
                         self.ppp = self.ppp.round();
+                    }
+                    let res = ui.checkbox(&mut CONFIG.skip_confirmation(), "Skip Confirmation");
+                    if res.clicked() {
+                        CONFIG.toggle_skip_confirmation();
                     }
                     ui.add(egui::Label::new(format!("Version: {}", *config::VERSION_NUMBER)).extend());
                     if let Ok(Some(hash)) = self.long_running.remote_version_number() {
@@ -1224,7 +1239,6 @@ impl App {
                         //     ))
                         //     .expect("Failed to open file");
                         // }
-                        let shift_down = ui.input(|i| i.modifiers.shift);
                         let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
@@ -1236,19 +1250,10 @@ impl App {
                                 .add(egui::Button::new(rich_text).wrap_mode(egui::TextWrapMode::Extend))
                                 .clicked()
                             {
-                                if let Err(e) = if shift_down {
-                                    just_open(&format!(
-                                        "{}{}",
-                                        stored_repo.local.path.to_string_lossy(),
-                                        file.full_path
-                                    ))
-                                } else {
-                                    confirm_and_open(&format!(
-                                        "{}{}",
-                                        stored_repo.local.path.to_string_lossy(),
-                                        file.full_path
-                                    ))
-                                } {
+                                if let Err(e) = confirm_and_open(
+                                    &format!("{}/{}", stored_repo.local.path.to_string_lossy(), file.full_path),
+                                    self.skip_confirmation,
+                                ) {
                                     dialogue::rfd_ok_dialogue(&format!("Failed to open file:\n{e}")).ok();
                                 }
                             }
@@ -1539,14 +1544,9 @@ fn self_update(bytes: Vec<u8>) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn confirm_and_open(path: &str) -> Result<(), anyhow::Error> {
-    if dialogue::rfd_confirm_response(&format!("Are you sure you want to open this file?\n\n{path}"))? {
+fn confirm_and_open(path: &str, skip: bool) -> Result<(), anyhow::Error> {
+    if dialogue::rfd_confirm_response(&format!("Are you sure you want to open this file?\n\n{path}"), skip)? {
         open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
     }
-    Ok(())
-}
-
-fn just_open(path: &str) -> Result<(), anyhow::Error> {
-    open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
     Ok(())
 }

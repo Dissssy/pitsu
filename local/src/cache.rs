@@ -556,17 +556,41 @@ impl RequestCache {
     pub fn reload_this_user(&mut self) {
         self.this_user = None;
     }
-    pub fn upload_files(&mut self, repo: Arc<Repository>, button_text: String) -> PendingResponse<Uuid> {
+    pub fn upload_files(
+        &mut self,
+        repo: Arc<Repository>,
+        button_text: String,
+        skip_confirmation: bool,
+    ) -> PendingResponse<Uuid> {
         if self.download.is_some() {
             return Ok(None);
         }
-        generic_sync_request(self.sync_in_progress(), &mut self.upload, repo, true, button_text)
+        generic_sync_request(
+            self.sync_in_progress(),
+            &mut self.upload,
+            repo,
+            true,
+            button_text,
+            skip_confirmation,
+        )
     }
-    pub fn download_files(&mut self, repo: Arc<Repository>, button_text: String) -> PendingResponse<Uuid> {
+    pub fn download_files(
+        &mut self,
+        repo: Arc<Repository>,
+        button_text: String,
+        skip_confirmation: bool,
+    ) -> PendingResponse<Uuid> {
         if self.upload.is_some() {
             return Ok(None);
         }
-        generic_sync_request(self.sync_in_progress(), &mut self.download, repo, false, button_text)
+        generic_sync_request(
+            self.sync_in_progress(),
+            &mut self.download,
+            repo,
+            false,
+            button_text,
+            skip_confirmation,
+        )
     }
     pub fn sync_in_progress(&self) -> bool {
         self.upload_in_progress() || self.download_in_progress()
@@ -790,6 +814,7 @@ fn generic_sync_request(
     repository: Arc<Repository>,
     upload: bool,
     button_text: String,
+    skip_confirmation: bool,
 ) -> PendingResponse<Uuid> {
     if either_is_some {
         return Ok(None);
@@ -801,7 +826,7 @@ fn generic_sync_request(
             let (sender, receiver) = mpsc::channel();
             *request_storage = Some(PendingRequest::Pending(receiver));
             std::thread::spawn(move || {
-                match crate::dialogue::rfd_confirm_response(&button_text) {
+                match crate::dialogue::rfd_confirm_response(&button_text, skip_confirmation) {
                     Ok(true) => {}
                     Ok(false) => {
                         if let Err(send_error) = sender.send(Err(Arc::from("Sync cancelled".to_string()))) {
