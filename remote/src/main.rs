@@ -776,7 +776,6 @@ async fn upload_file(
     let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
     let repo_path = format!("{}/{}", root_path, repo.uuid);
     let mut cleanup_paths = Vec::new();
-    let mut pitignore_updated = false;
     for file in &mut body.files {
         let raw_path = file.path.clone();
         let path = raw_path.trim_start_matches("/");
@@ -797,9 +796,6 @@ async fn upload_file(
                 return HttpResponse::BadRequest().body("Invalid file data");
             }
         };
-        if path == ".pitignore" {
-            pitignore_updated = true;
-        }
 
         if let Err(err) = tokio::fs::write(&full_path, &bytes).await {
             log::error!("Failed to write file: {err}");
@@ -808,7 +804,7 @@ async fn upload_file(
         cleanup_paths.push(full_path.clone());
     }
 
-    let mut root_folder = match RootFolder::ingest_folder(&repo_path.clone().into()) {
+    let root_folder = match RootFolder::ingest_folder(&repo_path.clone().into()) {
         Ok(folder) => folder,
         Err(err) => {
             log::error!("Failed to ingest folder: {err}");
@@ -820,42 +816,39 @@ async fn upload_file(
         }
     };
 
-    if pitignore_updated {
-        // .pitignore handling, delete any files that are in the .pitignore if it's just been uploaded
-        let pitignore = Pitignore::from_repository(
-            format!(
-                "{}/{}/",
-                std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string()),
-                uuid
-            )
-            .into(),
+    // .pitignore handling, delete any files that are in the .pitignore if it's just been uploaded
+    let pitignore = Pitignore::from_repository(
+        format!(
+            "{}/{}/",
+            std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string()),
+            uuid
         )
-        .unwrap_or_default();
+        .into(),
+    )
+    .unwrap_or_default();
 
-        for file in root_folder.files() {
-            if pitignore.is_ignored(&file.full_path) {
-                let full_path = format!("{}/{}/{}", root_path, repo.uuid, file.full_path);
-                log::debug!("Deleting ignored file: {full_path}");
-                // if let Err(err) = tokio::fs::remove_file(&full_path).await {
-                //     log::error!("Failed to delete ignored file: {err}");
-                // } else {
-                //     cleanup_paths.push(full_path);
-                // }
+    for file in root_folder.files() {
+        if pitignore.is_ignored(&file.full_path) {
+            let full_path = format!("{}/{}/{}", root_path, repo.uuid, file.full_path);
+            if let Err(err) = tokio::fs::remove_file(&full_path).await {
+                log::error!("Failed to delete ignored file: {err}");
+            } else {
+                cleanup_paths.push(full_path);
             }
         }
-
-        root_folder = match RootFolder::ingest_folder(&repo_path.into()) {
-            Ok(folder) => folder,
-            Err(err) => {
-                log::error!("Failed to ingest folder: {err}");
-
-                for path in cleanup_paths {
-                    let _ = tokio::fs::remove_file(&path).await;
-                }
-                return HttpResponse::InternalServerError().body("Failed to ingest folder");
-            }
-        };
     }
+
+    let root_folder = match RootFolder::ingest_folder(&repo_path.into()) {
+        Ok(folder) => folder,
+        Err(err) => {
+            log::error!("Failed to ingest folder: {err}");
+
+            for path in cleanup_paths {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+            return HttpResponse::InternalServerError().body("Failed to ingest folder");
+        }
+    };
 
     let file_hashes = match serde_json::to_value(&root_folder) {
         Ok(value) => value,

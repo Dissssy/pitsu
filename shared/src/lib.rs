@@ -229,11 +229,14 @@ fn recursive_flatten(files: &[File], path_so_far: String) -> Vec<FileOnDisk> {
         match file {
             File::Folder { name, children, .. } => {
                 let new_path = format!("{path_so_far}/{name}");
-                result.extend(recursive_flatten(children, new_path));
+                result.extend(recursive_flatten(
+                    children,
+                    new_path.trim_start_matches("/").to_string(),
+                ));
             }
             File::File { name, hash: _, size } => {
                 result.push(FileOnDisk {
-                    full_path: format!("{path_so_far}/{name}").into(),
+                    full_path: format!("{path_so_far}/{name}").trim_start_matches("/").into(),
                     size: *size,
                 });
             }
@@ -659,7 +662,7 @@ impl Pitignore {
         }
 
         let contents = std::fs::read_to_string(pitignore_path)?;
-        let patterns = contents
+        let mut patterns: Vec<(usize, PitignorePattern)> = contents
             .lines()
             .enumerate()
             .filter_map(|(index, line)| {
@@ -706,7 +709,14 @@ impl Pitignore {
                 ))
             })
             .collect();
-
+        // sort patterns by negated (true first) and then by pattern length (longer patterns first)
+        patterns.sort_by(|(_, p1), (_, p2)| {
+            if p1.negated != p2.negated {
+                p1.negated.cmp(&p2.negated)
+            } else {
+                p2.pattern.len().cmp(&p1.pattern.len())
+            }
+        });
         Ok(Self { patterns })
     }
     pub fn save_to_repository(&self, root_folder: std::path::PathBuf) -> Result<()> {
@@ -768,19 +778,18 @@ impl Pitignore {
             //     // If it matches a negated pattern, we keep it, otherwise we remove it.
             //     new.push(diff.clone());
             // }
-            if self.is_ignored(&diff.full_path) {
-                if !diff.change_type.is_on_client() {
-                    // If the diff is not on the client, we keep it
-                    new.push(diff.clone());
-                }
-            } else {
-                // If it is not ignored, we keep it
+            if !self.is_ignored(&diff.full_path) {
                 new.push(diff.clone());
             }
         }
         new.into()
     }
     pub fn is_ignored(&self, path: &str) -> bool {
+        if path.trim_start_matches("/") == ".pitignore" {
+            return false; // We never ignore the .pitignore file itself.
+        }
+        let mut is_ignored = false;
+        // true if the file matches any non-negated pattern, override with false if it matches any negated pattern
         for (_index, pattern) in &self.patterns {
             let mut both_match = true;
             if let Some(starts_with) = &pattern.starts_with {
@@ -800,9 +809,13 @@ impl Pitignore {
                 }
             }
             if both_match {
-                return true;
+                if pattern.negated {
+                    return false; // If it matches a negated pattern, we do not ignore it ever.
+                } else {
+                    is_ignored = true; // If it matches a non-negated pattern, we ignore it. (delayed so we can check all patterns)
+                }
             }
         }
-        false
+        is_ignored
     }
 }
