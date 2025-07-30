@@ -67,11 +67,11 @@ impl File {
                     size: _,
                 } => {
                     let new_path = format!("{path_so_far}/{name}");
-                    result.extend(Self::files(children, new_path));
+                    result.extend(Self::files(children, new_path.trim_start_matches("/").to_string()));
                 }
                 File::File { name, hash, size } => {
                     result.push(RawFile {
-                        full_path: format!("{path_so_far}/{name}").into(),
+                        full_path: format!("{path_so_far}/{name}").trim_start_matches("/").into(),
                         hash,
                         size,
                     });
