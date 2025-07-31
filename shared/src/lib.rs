@@ -712,7 +712,7 @@ impl Pitignore {
         // sort patterns by negated (true first) and then by pattern length (longer patterns first)
         patterns.sort_by(|(_, p1), (_, p2)| {
             if p1.negated != p2.negated {
-                p1.negated.cmp(&p2.negated)
+                p2.negated.cmp(&p1.negated) // true (negated) should come before false
             } else {
                 p2.pattern.len().cmp(&p1.pattern.len())
             }

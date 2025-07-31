@@ -18,6 +18,7 @@ mod nerdfonts;
 
 // list of safely openable file extensions, non executable
 const OPENABLE_FILE_TYPES: &[&str] = &["txt", "md", "toml", "yaml", "json", "cfg", "ini", "me3"];
+static mut DIM_FACTOR: f32 = 0.6;
 
 fn main() -> anyhow::Result<()> {
     config::setup();
@@ -780,6 +781,7 @@ impl App {
                     if res.clicked() {
                         CONFIG.set_skip_confirmation(skip_confirmation);
                     }
+                    // ui.add(egui::Slider::new(unsafe { &mut DIM_FACTOR }, 0.0..=1.0).text("Dim Factor"));
                     ui.add(egui::Label::new(format!("Version: {}", *config::VERSION_NUMBER)).extend());
                     if let Ok(Some(hash)) = self.long_running.remote_version_number() {
                         ui.add(egui::Label::new(format!("Remote Version: {hash}")).extend());
@@ -1201,10 +1203,13 @@ impl App {
                             false
                         }
                     };
+                    let ignored = stored_repo.local_pitignore.is_ignored(&file.full_path);
                     row.col(|ui| {
                         ui.add(
                             egui::Label::new(egui::RichText::new(&*size).color(if will_be_deleted {
                                 egui::Color32::RED
+                            } else if ignored {
+                                dim(color, unsafe { DIM_FACTOR })
                             } else {
                                 color
                             }))
@@ -1240,13 +1245,14 @@ impl App {
                         //     ))
                         //     .expect("Failed to open file");
                         // }
+                        let executable = OPENABLE_FILE_TYPES.iter().any(|ext| file.full_path.ends_with(ext));
                         let mut rich_text = egui::RichText::new(&*file.full_path);
                         if will_be_deleted {
                             rich_text = rich_text.color(egui::Color32::RED);
-                        } else if stored_repo.local_pitignore.is_ignored(&file.full_path) {
-                            rich_text = rich_text.color(egui::Color32::DARK_GRAY);
+                        } else if ignored {
+                            rich_text = rich_text.color(dim(egui::Color32::GRAY, unsafe { DIM_FACTOR }));
                         }
-                        if OPENABLE_FILE_TYPES.iter().any(|ext| file.full_path.ends_with(ext)) {
+                        if executable {
                             if ui
                                 .add(egui::Button::new(rich_text).wrap_mode(egui::TextWrapMode::Extend))
                                 .clicked()
@@ -1550,4 +1556,14 @@ fn confirm_and_open(path: &str, skip: bool) -> Result<(), anyhow::Error> {
         open::that(path).map_err(|e| anyhow::anyhow!("Failed to open file: {e}"))?;
     }
     Ok(())
+}
+
+fn dim(color: egui::Color32, factor: f32) -> egui::Color32 {
+    let rgb = (color.r() as f32, color.g() as f32, color.b() as f32);
+    let new_rgb = (
+        (rgb.0 * factor).round() as u8,
+        (rgb.1 * factor).round() as u8,
+        (rgb.2 * factor).round() as u8,
+    );
+    egui::Color32::from_rgb(new_rgb.0, new_rgb.1, new_rgb.2)
 }
