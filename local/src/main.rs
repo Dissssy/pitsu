@@ -775,9 +775,10 @@ impl App {
                     if slider.changed() && (self.ppp - self.ppp.round()).abs() < 0.1 {
                         self.ppp = self.ppp.round();
                     }
-                    let res = ui.checkbox(&mut CONFIG.skip_confirmation(), "Skip Confirmation");
+                    let mut skip_confirmation = CONFIG.skip_confirmation();
+                    let res = ui.checkbox(&mut skip_confirmation, "Skip Confirmation");
                     if res.clicked() {
-                        CONFIG.toggle_skip_confirmation();
+                        CONFIG.set_skip_confirmation(skip_confirmation);
                     }
                     ui.add(egui::Label::new(format!("Version: {}", *config::VERSION_NUMBER)).extend());
                     if let Ok(Some(hash)) = self.long_running.remote_version_number() {

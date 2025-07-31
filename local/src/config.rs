@@ -229,9 +229,11 @@ impl Config {
             .expect("Failed to lock config");
         config.skip_confirmation
     }
-    pub fn toggle_skip_confirmation(&self) {
-        let mut config = self.config.lock().expect("Failed to lock config");
-        config.skip_confirmation = !config.skip_confirmation;
+    pub fn set_skip_confirmation(&self, skip: bool) {
+        {
+            let mut config = self.config.lock().expect("Failed to lock config");
+            config.skip_confirmation = skip;
+        }
         if let Err(e) = self.save() {
             log::error!("Failed to save configuration after toggling skip confirmation: {e}");
         }
