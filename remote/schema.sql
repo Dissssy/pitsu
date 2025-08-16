@@ -27,3 +27,12 @@ CREATE TABLE Access (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (repository_uuid, user_uuid)
 );
+
+CREATE TABLE Files (
+    uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    repository_uuid UUID NOT NULL REFERENCES Repositories(uuid) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    aws_s3_object_key TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

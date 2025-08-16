@@ -643,6 +643,7 @@ impl App {
                                         (progress.completed as f32 / progress.total as f32) * 100.0
                                     )
                                 });
+                                ctx.request_repaint_after(std::time::Duration::from_millis(100));
                             } else {
                                 // Show refresh button
                                 if ui.add_enabled(true, egui::Button::new(nerdfonts::REFRESH)).clicked() {

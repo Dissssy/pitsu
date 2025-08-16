@@ -4,14 +4,19 @@ use std::{
     sync::Arc,
 };
 
+use aws_sdk_s3::Client as S3Client;
+
 use actix_web::{
     delete, get, patch, post,
     web::{Data, Json, JsonConfig},
     App, HttpResponse, HttpServer, Responder,
 };
+use aws_sdk_s3::error::DisplayErrorContext;
 use clap::Parser as _;
 mod cornucopia;
+use crate::cornucopia::queries::access::get_all_users_with_access;
 use deadpool_postgres::Pool;
+use futures::{stream::FuturesUnordered, StreamExt};
 use pitsu_lib::{
     anyhow::{self, Result},
     decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, Pitignore,
@@ -23,8 +28,6 @@ use tokio::{
     sync::Mutex,
 };
 use uuid::Uuid;
-
-use crate::cornucopia::queries::access::get_all_users_with_access;
 
 #[get("/")]
 async fn root() -> impl Responder {
@@ -694,21 +697,61 @@ async fn repository_path(
                 }
             };
             match root_folder.index_through(&path) {
-                Ok(index) => {
-                    return HttpResponse::Ok().json(index);
-                }
+                Ok(index) => HttpResponse::Ok().json(index),
                 Err(err) => {
                     log::error!("Failed to index folder: {err}");
-                    return HttpResponse::InternalServerError().body("Failed to index folder");
+                    HttpResponse::InternalServerError().body("Failed to index folder")
                 }
-            };
-        }
-
-        match actix_files::NamedFile::open(full_path) {
-            Ok(file) => file.into_response(&req),
-            Err(err) => {
-                log::error!("Failed to open file: {err}");
-                HttpResponse::InternalServerError().body("File not found")
+            }
+        } else {
+            match cornucopia::queries::files::get()
+                .bind(&transaction, &path, &repo.uuid)
+                .opt()
+                .await
+            {
+                Ok(Some(file)) => {
+                    let location = format!(
+                        "https://{}.s3.{}.amazonaws.com/{}",
+                        std::env!("AWS_BUCKET_NAME"),
+                        std::env!("AWS_REGION"),
+                        file.aws_s3_object_key
+                    );
+                    match HttpResponse::TemporaryRedirect()
+                        .append_header(("Location", location.as_str()))
+                        .await
+                    {
+                        Ok(response) => {
+                            log::debug!("Redirecting to {location}");
+                            response
+                        }
+                        Err(e) => {
+                            log::error!("Failed to create redirect response: {e}");
+                            // Fallback to serving the file from disk
+                            match actix_files::NamedFile::open(full_path) {
+                                Ok(file) => file.into_response(&req),
+                                Err(err) => {
+                                    log::error!("Failed to open file: {err}");
+                                    HttpResponse::InternalServerError().body("File not found")
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Fallback to serving the file from disk
+                    log::warn!("File not found in database, serving from disk: {full_path}");
+                    match actix_files::NamedFile::open(full_path) {
+                        Ok(file) => file.into_response(&req),
+                        Err(err) => {
+                            log::error!("Failed to open file: {err}");
+                            HttpResponse::InternalServerError().body("File not found")
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to fetch file: {e}");
+                    HttpResponse::InternalServerError().body("Failed to fetch file")
+                }
             }
         }
     } else {
@@ -721,6 +764,7 @@ async fn upload_file(
     req: actix_web::HttpRequest,
     uuid: actix_web::web::Path<uuid::Uuid>,
     pool: Data<Pool>,
+    client: Data<S3Client>,
     mut body: Json<FileUpload>,
 ) -> impl Responder {
     let pool = pool.into_inner();
@@ -800,6 +844,44 @@ async fn upload_file(
         if let Err(err) = tokio::fs::write(&full_path, &bytes).await {
             log::error!("Failed to write file: {err}");
             return HttpResponse::InternalServerError().body("Failed to write file");
+        }
+        // Add the file to the files table in the database and upload to S3
+        {
+            let bytestream = match aws_sdk_s3::primitives::ByteStream::from_path(PathBuf::from(&full_path)).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    log::error!("Failed to create byte stream: {err}");
+                    return HttpResponse::InternalServerError().body("Failed to create byte stream");
+                }
+            };
+            let object_id = Uuid::new_v4();
+            match client
+                .put_object()
+                .bucket(std::env!("AWS_BUCKET_NAME"))
+                .key(object_id.to_string())
+                .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
+                .body(bytestream)
+                .send()
+                .await
+            {
+                Ok(_) => {}
+                Err(err) => {
+                    log::error!("Failed to upload file to S3: {err}");
+                    return HttpResponse::InternalServerError().body("Failed to upload file to S3");
+                }
+            };
+
+            match cornucopia::queries::files::create()
+                .bind(&transaction, &repo.uuid, &path, &object_id.to_string())
+                .one()
+                .await
+            {
+                Ok(_) => {}
+                Err(err) => {
+                    log::error!("Failed to insert file record: {err}");
+                    return HttpResponse::InternalServerError().body("Failed to insert file record");
+                }
+            }
         }
         cleanup_paths.push(full_path.clone());
     }
@@ -894,6 +976,7 @@ async fn delete_file(
     req: actix_web::HttpRequest,
     path_stuff: actix_web::web::Path<(uuid::Uuid, String)>,
     pool: Data<Pool>,
+    client: Data<S3Client>,
 ) -> impl Responder {
     let pool = pool.into_inner();
     let user = match get_user(&req, pool.clone()).await {
@@ -971,6 +1054,35 @@ async fn delete_file(
     } else {
         log::debug!("Path is neither a file nor a directory");
         return HttpResponse::NotFound().body("File or directory not found");
+    }
+
+    // Delete file from table and delete from S3
+    {
+        match cornucopia::queries::files::delete()
+            .bind(&transaction, &path, &repo.uuid)
+            .one()
+            .await
+        {
+            Ok(entry) => {
+                // delete from S3
+                tokio::spawn(async move {
+                    if let Err(err) = client
+                        .delete_object()
+                        .bucket(env!("AWS_BUCKET_NAME"))
+                        .key(entry.aws_s3_object_key)
+                        .send()
+                        .await
+                        .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))
+                    {
+                        log::error!("Failed to delete S3 object: {err}");
+                    }
+                });
+            }
+            Err(err) => {
+                log::error!("Failed to delete file record: {err}");
+                return HttpResponse::InternalServerError().body("Failed to delete file record");
+            }
+        }
     }
 
     let root_folder = match RootFolder::ingest_folder(&format!("{}/{}", root_path, repo.uuid).into()) {
@@ -1294,7 +1406,7 @@ fn xor_cypher(input: String) -> String {
         .collect()
 }
 
-async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
+async fn exec(host: String, port: u16, pool: Pool, client: S3Client) -> Result<()> {
     std::env::set_var("SEQ_API_KEY", env!("REMOTE_SEQ_API_KEY"));
     if let Err(e) = datalust_logger::init("pitsu") {
         eprintln!("Failed to initialize logger: {e}");
@@ -1306,6 +1418,7 @@ async fn exec(host: String, port: u16, pool: Pool) -> Result<()> {
             .app_data(json_cfg.clone())
             .app_data(Data::new(pool.clone()))
             .app_data(Data::new(InviteLock(Mutex::new(()))))
+            .app_data(Data::new(client.clone()))
             .service(root)
             .service(set_access_level)
             .service(remove_user_access)
@@ -1365,7 +1478,35 @@ enum UserCommand {
 #[derive(clap::Subcommand)]
 enum RepositoryCommand {
     List,
-    Sync,
+    Sync {
+        #[clap(subcommand)]
+        stage: RepositorySyncStage,
+    },
+}
+
+#[derive(clap::Subcommand, PartialEq, Eq)]
+enum RepositorySyncStage {
+    All,
+    Hashes,
+    Aws { repo: Option<Uuid> },
+}
+
+impl RepositorySyncStage {
+    fn sync_hashes(&self) -> bool {
+        matches!(self, RepositorySyncStage::All | RepositorySyncStage::Hashes)
+    }
+
+    fn sync_aws(&self) -> bool {
+        matches!(self, RepositorySyncStage::All | RepositorySyncStage::Aws { .. })
+    }
+
+    fn aws_repo(&self) -> Option<Uuid> {
+        if let RepositorySyncStage::Aws { repo } = self {
+            *repo
+        } else {
+            None
+        }
+    }
 }
 
 #[actix_web::main]
@@ -1375,10 +1516,13 @@ async fn main() -> std::io::Result<()> {
         log::error!("Failed to create database pool: {err}");
         std::process::exit(1);
     });
+    let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::v2025_01_17()).await;
+    println!("Using AWS region: {:?}", aws_config.region());
+    let s3_client = aws_sdk_s3::Client::new(&aws_config);
 
     match cli.command {
         Command::Run { port, host } => {
-            exec(host, port, pool).await.unwrap_or_else(|err| {
+            exec(host, port, pool, s3_client).await.unwrap_or_else(|err| {
                 log::error!("Failed to start server: {err}");
                 std::process::exit(1);
             });
@@ -1561,76 +1705,89 @@ async fn main() -> std::io::Result<()> {
             }
         }
         Command::Repo {
-            repository_command: RepositoryCommand::Sync,
+            repository_command: RepositoryCommand::Sync { stage },
         } => {
-            println!("Syncing repository hashes...");
-            let mut connection = pool.get().await.unwrap_or_else(|err| {
-                log::error!("Failed to get database connection: {err}");
-                std::process::exit(1);
-            });
-
-            let repos = crate::cornucopia::queries::repository::get_all()
-                .bind(&connection)
-                .all()
-                .await
-                .unwrap_or_else(|err| {
-                    log::error!("Failed to fetch repositories: {err}");
+            if stage.sync_hashes() {
+                println!("Syncing repository hashes...");
+                let mut connection = pool.get().await.unwrap_or_else(|err| {
+                    log::error!("Failed to get database connection: {err}");
                     std::process::exit(1);
                 });
-            if repos.is_empty() {
-                println!("No repositories found to sync.");
-                return Ok(());
-            }
-            let total = repos.len();
-            for (i, repo) in repos.iter().enumerate() {
-                let transaction = connection.transaction().await.unwrap_or_else(|err| {
-                    log::error!("Failed to start transaction: {err}");
-                    std::process::exit(1);
-                });
-                println!("Syncing repository {}/{total}: {}", i + 1, repo.name);
 
-                let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
-                let full_path = format!("{}/{}", root_path, repo.uuid);
-
-                if !std::path::Path::new(&full_path).exists() {
-                    log::warn!("Repository path does not exist: {full_path}");
-                    continue;
+                let repos = crate::cornucopia::queries::repository::get_all()
+                    .bind(&connection)
+                    .all()
+                    .await
+                    .unwrap_or_else(|err| {
+                        log::error!("Failed to fetch repositories: {err}");
+                        std::process::exit(1);
+                    });
+                if repos.is_empty() {
+                    println!("No repositories found to sync.");
+                    return Ok(());
                 }
+                let total = repos.len();
+                for (i, repo) in repos.iter().enumerate() {
+                    let transaction = connection.transaction().await.unwrap_or_else(|err| {
+                        log::error!("Failed to start transaction: {err}");
+                        std::process::exit(1);
+                    });
+                    println!("Syncing repository {}/{total}: {}", i + 1, repo.name);
 
-                let root_folder = match pitsu_lib::RootFolder::ingest_folder(&full_path.into()) {
-                    Ok(folder) => folder,
-                    Err(err) => {
-                        log::error!("Failed to ingest folder for repository {}: {err}", repo.name);
+                    let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
+                    let full_path = format!("{}/{}", root_path, repo.uuid);
+
+                    if !std::path::Path::new(&full_path).exists() {
+                        log::warn!("Repository path does not exist: {full_path}");
                         continue;
                     }
-                };
 
-                let file_hashes = match serde_json::to_value(&root_folder) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        log::error!("Failed to serialize file hashes for repository {}: {err}", repo.name);
-                        continue;
+                    let root_folder = match pitsu_lib::RootFolder::ingest_folder(&full_path.into()) {
+                        Ok(folder) => folder,
+                        Err(err) => {
+                            log::error!("Failed to ingest folder for repository {}: {err}", repo.name);
+                            continue;
+                        }
+                    };
+
+                    let file_hashes = match serde_json::to_value(&root_folder) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            log::error!("Failed to serialize file hashes for repository {}: {err}", repo.name);
+                            continue;
+                        }
+                    };
+
+                    let res = crate::cornucopia::queries::repository::update_file_hashes_by_uuid()
+                        .bind(&transaction, &file_hashes, &repo.uuid)
+                        .one()
+                        .await;
+                    match res {
+                        Ok(_) => {
+                            println!("Successfully synced repository: {}", repo.name);
+
+                            if let Err(err) = transaction.commit().await {
+                                log::error!("Failed to commit transaction: {err}");
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("Failed to update file hashes for repository {}: {err}", repo.name);
+
+                            if let Err(rollback_err) = transaction.rollback().await {
+                                log::error!("Failed to rollback transaction: {rollback_err}");
+                            }
+                        }
                     }
-                };
-
-                let res = crate::cornucopia::queries::repository::update_file_hashes_by_uuid()
-                    .bind(&transaction, &file_hashes, &repo.uuid)
-                    .one()
-                    .await;
-                match res {
+                }
+            }
+            if stage.sync_aws() {
+                println!("Syncing AWS files...");
+                match sync_aws_files(&pool, &s3_client, stage.aws_repo()).await {
                     Ok(_) => {
-                        println!("Successfully synced repository: {}", repo.name);
-
-                        if let Err(err) = transaction.commit().await {
-                            log::error!("Failed to commit transaction: {err}");
-                        }
+                        println!("Successfully synced AWS files");
                     }
                     Err(err) => {
-                        log::error!("Failed to update file hashes for repository {}: {err}", repo.name);
-
-                        if let Err(rollback_err) = transaction.rollback().await {
-                            log::error!("Failed to rollback transaction: {rollback_err}");
-                        }
+                        log::error!("Failed to sync AWS files: {err}");
                     }
                 }
             }
@@ -1857,4 +2014,331 @@ fn get_client_version() -> Result<VersionNumber> {
         std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string())
     ));
     VersionNumber::new(&client_path)
+}
+
+async fn sync_aws_files(pool: &Pool, s3_client: &aws_sdk_s3::Client, only_this_repo: Option<Uuid>) -> Result<()> {
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
+    let transaction = connection
+        .transaction()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
+    // we need to go through every single file in every single repository and ensure that they exist within the Files table (and have a valid aws S3 object key)
+    let mut table_files: Vec<(Uuid, String, String)> = vec![];
+    {
+        let raw_table_files = cornucopia::queries::files::get_all()
+            .bind(&transaction)
+            .all()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to fetch files: {err}"))?;
+        for file in raw_table_files {
+            // ensure the s3 object key is valid, if not, delete this entry from the database
+            if s3_client
+                .head_object()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .key(&file.aws_s3_object_key)
+                .send()
+                .await
+                .is_err()
+            {
+                cornucopia::queries::files::delete()
+                    .bind(&transaction, &file.file_path, &file.repository_uuid)
+                    .one()
+                    .await
+                    .map_err(|err| anyhow::anyhow!("Failed to delete file with invalid S3 key: {err}"))?;
+                continue;
+            }
+            table_files.push((file.repository_uuid, file.file_path, file.aws_s3_object_key));
+        }
+    }
+    println!("Found {} files in the database", table_files.len());
+
+    let mut repository_files: Vec<(Uuid, String)> = vec![];
+    {
+        // get all repository directories out of the root folder by iterating over every folder in ROOT_FOLDER and attempting to parse the folders name as a uuid
+        let mut raw_repository_folders = vec![]; // will be walked later
+        let mut read_dir = tokio::fs::read_dir(env!("ROOT_FOLDER"))
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to read root folder: {err}"))?;
+        while let Ok(Some(file)) = read_dir.next_entry().await {
+            if let Ok(uuid) = Uuid::parse_str(file.file_name().to_str().unwrap_or("")) {
+                raw_repository_folders.push((uuid, file.path()));
+            }
+        }
+        // walk the dirs and retrieve only the part of the path AFTER ROOT_FOLDER/uuid
+        for (uuid, path) in raw_repository_folders {
+            let mut walker = async_walkdir::WalkDir::new(&path);
+            while let Some(Ok(file)) = walker.next().await {
+                match file.metadata().await.map(|m| m.is_file()) {
+                    Ok(true) => {
+                        let relative_path = file
+                            .path()
+                            .strip_prefix(&path)
+                            .expect("Failed to strip prefix")
+                            .to_path_buf();
+                        repository_files.push((uuid, relative_path.display().to_string()));
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        println!("Failed to get metadata for file {}: {}", file.path().display(), e);
+                    }
+                }
+            }
+        }
+    }
+    println!("Found {} repository files", repository_files.len());
+
+    if let Some(only_this_repo) = only_this_repo {
+        table_files.retain(|(uuid, _, _)| *uuid == only_this_repo);
+        repository_files.retain(|(uuid, _)| *uuid == only_this_repo);
+        println!(
+            "Filtered to only repository {}, {} database files and {} repository files",
+            only_this_repo,
+            table_files.len(),
+            repository_files.len()
+        );
+    }
+
+    let table_files: Arc<[(Uuid, String, String)]> = Arc::from(table_files);
+
+    let total = table_files.len();
+    if total != 0 {
+        display_percentage(total, 0, "Checking repository files");
+    }
+    // first walk every database entry and ensure the file exists on disk, if not, remove the entry from the database, and delete the file from the s3 bucket
+    for (i, (uuid, file_path, s3_key)) in table_files.iter().enumerate() {
+        if !repository_files.contains(&(*uuid, file_path.clone())) {
+            cornucopia::queries::files::delete()
+                .bind(&transaction, &file_path, uuid)
+                .one()
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed to delete file from database: {err}"))?;
+            s3_client
+                .delete_object()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .key(s3_key)
+                .send()
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))?;
+        }
+        display_percentage(total, i + 1, "Checking repository files");
+    }
+    println!("Finished cleaning up database entries");
+
+    transaction
+        .commit()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
+    let total = repository_files.len();
+    if total != 0 {
+        display_percentage(total, 0, "Uploading new repository files");
+    }
+    // now walk every file on disk, if the file does not exist within the database, upload the file to S3, get the object ID, and create the database entry
+    let mut orderless = FuturesUnordered::new();
+    for (uuid, file_path) in repository_files.iter() {
+        let pool = pool.clone();
+        let table_files = table_files.clone();
+        let client = s3_client.clone();
+        orderless.push(tokio::spawn(download_and_insert(
+            pool,
+            table_files,
+            client,
+            *uuid,
+            file_path.clone(),
+        )))
+    }
+    let mut i = 0;
+    while let Some(res) = orderless.next().await {
+        i += 1;
+        match res {
+            Ok(Ok(false)) => {
+                display_percentage(total, i, "Skipped existing repository file");
+            }
+            Ok(Ok(true)) => {
+                display_percentage(total, i, "Uploaded new repository file");
+            }
+            Ok(Err(err)) => {
+                log::error!("Failed to upload and insert file: {err}");
+            }
+            Err(err) => {
+                log::error!("Task panicked: {err}");
+            }
+        }
+        // display_percentage(total, total - orderless.len(), "Uploading new repository files");
+    }
+    println!("Finished uploading new repository files");
+
+    // now iterate over every file in the bucket, and if their key does not exist in the database, delete them from s3
+    let mut s3_keys: Vec<String> = vec![];
+    let mut continuation_token = None;
+    println!("Collecting AWS Keys");
+    println!("Collected: 0");
+    loop {
+        let list_objects = if let Some(continuation_token) = continuation_token {
+            s3_client
+                .list_objects_v2()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .continuation_token(continuation_token)
+                .send()
+                .await?
+        } else {
+            s3_client
+                .list_objects_v2()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .send()
+                .await?
+        };
+        for object in list_objects.contents.as_ref().unwrap_or(&vec![]) {
+            s3_keys.push(
+                object
+                    .key()
+                    .map(|key| key.to_string())
+                    .unwrap_or(String::from("INVALID_KEY")),
+            );
+        }
+        if !list_objects.is_truncated.unwrap_or(false) {
+            break;
+        }
+        continuation_token = list_objects.next_continuation_token().map(|s| s.to_string());
+        println!("\rCollected: {}", s3_keys.len());
+    }
+    println!("Finished collecting AWS keys. Total: {}", s3_keys.len());
+
+    // refresh table_files
+    let transaction = connection
+        .transaction()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
+    let mut table_files: Vec<(Uuid, String, String)> = vec![];
+    {
+        let raw_table_files = cornucopia::queries::files::get_all()
+            .bind(&transaction)
+            .all()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to fetch files: {err}"))?;
+        for file in raw_table_files {
+            // ensure the s3 object key is valid, if not, delete this entry from the database
+            if s3_client
+                .head_object()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .key(&file.aws_s3_object_key)
+                .send()
+                .await
+                .is_err()
+            {
+                cornucopia::queries::files::delete()
+                    .bind(&transaction, &file.file_path, &file.repository_uuid)
+                    .one()
+                    .await
+                    .map_err(|err| anyhow::anyhow!("Failed to delete file with invalid S3 key: {err}"))?;
+                continue;
+            }
+            table_files.push((file.repository_uuid, file.file_path, file.aws_s3_object_key));
+        }
+    }
+    println!("Found {} files in the database", table_files.len());
+
+    if let Some(only_this_repo) = only_this_repo {
+        table_files.retain(|(uuid, _, _)| *uuid == only_this_repo);
+        println!(
+            "Filtered to only repository {}, {} database files",
+            only_this_repo,
+            table_files.len()
+        );
+    }
+
+    if let Some(only_this_repo) = only_this_repo {
+        s3_keys.retain(|key| {
+            table_files
+                .iter()
+                .any(|(uuid, _, k)| *uuid == only_this_repo && k == key)
+        });
+        println!(
+            "Filtered to only repository {}, {} S3 keys",
+            only_this_repo,
+            s3_keys.len()
+        );
+    }
+
+    let delete_keys = s3_keys
+        .iter()
+        .filter(|s3_key| !table_files.iter().any(|(_, _, key)| key == *s3_key))
+        .cloned()
+        .collect::<Vec<String>>();
+
+    let total = delete_keys.len();
+    if total != 0 {
+        display_percentage(total, 0, "Deleting orphaned S3 files");
+    }
+    for (i, s3_key) in delete_keys.iter().enumerate() {
+        s3_client
+            .delete_object()
+            .bucket(env!("AWS_BUCKET_NAME"))
+            .key(s3_key)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))?;
+        display_percentage(total, i + 1, "Deleting orphaned S3 files");
+    }
+    println!("Finished deleting orphaned S3 files");
+
+    Ok(())
+}
+
+fn display_percentage(total: usize, progress: usize, label: &str) {
+    // Calculate the percentage
+    let percentage = (progress as f64 / total as f64) * 100.0;
+    // Print the percentage with the label, overwriting the previous line
+    println!("{label}: {percentage:.2}% ({progress}/{total})");
+}
+
+async fn download_and_insert(
+    pool: Pool,
+    table_files: Arc<[(Uuid, String, String)]>,
+    s3_client: S3Client,
+    uuid: Uuid,
+    file_path: String,
+) -> Result<bool> {
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
+    let transaction = connection
+        .transaction()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
+    if !table_files.iter().any(|(u, f, _)| u == &uuid && f == &file_path) {
+        let s3_key = Uuid::new_v4().to_string();
+        s3_client
+            .put_object()
+            .bucket(env!("AWS_BUCKET_NAME"))
+            .key(&s3_key)
+            .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
+            .body(
+                aws_sdk_s3::primitives::ByteStream::from_path(format!(
+                    "{}/{}/{}",
+                    env!("ROOT_FOLDER"),
+                    uuid,
+                    file_path
+                ))
+                .await?,
+            )
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {}", DisplayErrorContext(err)))?;
+        cornucopia::queries::files::create()
+            .bind(&transaction, &uuid, &file_path, &s3_key)
+            .one()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
