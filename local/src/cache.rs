@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
 };
 
 use pitsu_lib::{
@@ -11,15 +11,16 @@ use pitsu_lib::{
 use uuid::Uuid;
 
 use crate::{
-    config::{delete_request, delete_request_with_body, get_request, post_request, CONFIG, PUBLIC_URL},
     Repository,
+    config::{CONFIG, PUBLIC_URL, delete_request, delete_request_with_body, get_request, post_request},
 };
 
 pub struct RequestCache {
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
     users: Option<PendingRequest<Vec<User>>>,
-    upload: Option<PendingRequest<Uuid>>,
-    download: Option<PendingRequest<Uuid>>,
+    upload: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
+    download: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
+    latest_progress: Option<Progress>,
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
     remote_update_bytes: Option<PendingRequest<Arc<[u8]>>>,
     create_repository: Option<PendingRequest<Arc<RemoteRepository>>>,
@@ -59,6 +60,7 @@ impl RequestCache {
             users: None,
             upload: None,
             download: None,
+            latest_progress: None,
             remote_version_number: None,
             remote_update_bytes: None,
             repositories: HashMap::new(),
@@ -130,14 +132,14 @@ impl RequestCache {
                 );
                 PendingRequest::Pending(receiver)
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => return Ok(None),
                 Err(mpsc::TryRecvError::Disconnected) => {
                     PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
                 }
             },
-            Some(PendingRequest::Response(ref result)) => return result.clone().map(Some),
+            Some(PendingRequest::Response(result)) => return result.clone().map(Some),
         };
         self.create_repository = Some(new_state);
         Ok(None)
@@ -210,7 +212,7 @@ impl RequestCache {
                 );
                 PendingRequest::Pending(receiver)
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => {
                     return Ok(None);
@@ -219,7 +221,7 @@ impl RequestCache {
                     PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
                 }
             },
-            Some(PendingRequest::Response(ref result)) => {
+            Some(PendingRequest::Response(result)) => {
                 return result.clone().map(Some);
             }
         };
@@ -263,7 +265,7 @@ impl RequestCache {
                 );
                 PendingRequest::Pending(receiver)
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => {
                     return Ok(None);
@@ -272,7 +274,7 @@ impl RequestCache {
                     PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
                 }
             },
-            Some(PendingRequest::Response(ref result)) => {
+            Some(PendingRequest::Response(result)) => {
                 return result.clone().map(Some);
             }
         };
@@ -321,7 +323,7 @@ impl RequestCache {
                 });
                 PendingRequest::Pending(receiver)
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => {
                     return Ok(None);
@@ -330,7 +332,7 @@ impl RequestCache {
                     PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
                 }
             },
-            Some(PendingRequest::Response(ref result)) => {
+            Some(PendingRequest::Response(result)) => {
                 return result.clone().map(Some);
             }
         };
@@ -379,7 +381,7 @@ impl RequestCache {
                 });
                 PendingRequest::Pending(receiver)
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => PendingRequest::Response(result),
                 Err(mpsc::TryRecvError::Empty) => {
                     return Ok(None);
@@ -388,7 +390,7 @@ impl RequestCache {
                     PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string())))
                 }
             },
-            Some(PendingRequest::Response(ref result)) => {
+            Some(PendingRequest::Response(result)) => {
                 return result.clone().map(Some);
             }
         };
@@ -542,7 +544,7 @@ impl RequestCache {
     }
     pub fn reload_repository(&mut self, uuid: Uuid) -> Result<(), Arc<str>> {
         // if self.upload or self.download are specifically and only IN PROGRESS, we should not reload
-        if self.sync_in_progress() {
+        if self.sync_in_progress().is_some() {
             return Err(Arc::from(
                 "Cannot reload repository while sync is in progress".to_string(),
             ));
@@ -566,7 +568,7 @@ impl RequestCache {
             return Ok(None);
         }
         generic_sync_request(
-            self.sync_in_progress(),
+            self.sync_in_progress().is_some(),
             &mut self.upload,
             repo,
             true,
@@ -584,7 +586,7 @@ impl RequestCache {
             return Ok(None);
         }
         generic_sync_request(
-            self.sync_in_progress(),
+            self.sync_in_progress().is_some(),
             &mut self.download,
             repo,
             false,
@@ -592,53 +594,105 @@ impl RequestCache {
             skip_confirmation,
         )
     }
-    pub fn sync_in_progress(&self) -> bool {
-        self.upload_in_progress() || self.download_in_progress()
+    pub fn sync_in_progress(&mut self) -> Option<Progress> {
+        match (
+            self.upload_in_progress().or_else(|| self.download_in_progress()),
+            self.latest_progress,
+        ) {
+            (Some(progress), _) => {
+                self.latest_progress = Some(progress);
+                Some(progress)
+            }
+            (None, Some(progress)) => Some(progress),
+            (None, None) => None,
+        }
     }
-    pub fn upload_in_progress(&self) -> bool {
-        self.upload.as_ref().is_some_and(|req| req.in_progress())
+    pub fn upload_in_progress(&mut self) -> Option<Progress> {
+        match (
+            self.upload.as_ref().and_then(|(req, progress)| {
+                if let Some(progress) = progress
+                    && req.in_progress()
+                {
+                    progress.try_iter().last()
+                } else {
+                    None
+                }
+            }),
+            self.latest_progress,
+        ) {
+            (Some(progress), _) => {
+                self.latest_progress = Some(progress);
+                Some(progress)
+            }
+            (None, Some(progress)) => Some(progress),
+            (None, None) => None,
+        }
     }
-    pub fn download_in_progress(&self) -> bool {
-        self.download.as_ref().is_some_and(|req| req.in_progress())
+    pub fn download_in_progress(&mut self) -> Option<Progress> {
+        match (
+            self.download.as_ref().and_then(|(req, progress)| {
+                if let Some(progress) = progress
+                    && req.in_progress()
+                {
+                    progress.try_iter().last()
+                } else {
+                    None
+                }
+            }),
+            self.latest_progress,
+        ) {
+            (Some(progress), _) => {
+                self.latest_progress = Some(progress);
+                Some(progress)
+            }
+            (None, Some(progress)) => Some(progress),
+            (None, None) => None,
+        }
     }
     pub fn any_sync_response(&mut self) -> PendingResponse<Uuid> {
         // check either upload or download for a response, treat as if its a repeat call
         if let Some(upload) = &mut self.upload {
             // usual matching and try_recv logic
             match upload {
-                PendingRequest::Pending(ref pending) => match pending.try_recv() {
+                (PendingRequest::Pending(pending), _) => match pending.try_recv() {
                     Ok(result) => {
-                        *upload = PendingRequest::Response(result);
+                        *upload = (PendingRequest::Response(result), None);
                         return Ok(None);
                     }
                     Err(mpsc::TryRecvError::Empty) => return Ok(None),
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        *upload = PendingRequest::Response(Err(Arc::from(
-                            "Request channel disconnected unexpectedly".to_string(),
-                        )));
+                        *upload = (
+                            PendingRequest::Response(Err(Arc::from(
+                                "Request channel disconnected unexpectedly".to_string(),
+                            ))),
+                            None,
+                        );
                         return Ok(None);
                     }
                 },
-                PendingRequest::Response(ref result) => {
+                (PendingRequest::Response(result), _) => {
                     return result.clone().map(Some);
                 }
             }
         } else if let Some(download) = &mut self.download {
             match download {
-                PendingRequest::Pending(ref pending) => match pending.try_recv() {
+                (PendingRequest::Pending(pending), _) => match pending.try_recv() {
                     Ok(result) => {
-                        *download = PendingRequest::Response(result);
+                        *download = (PendingRequest::Response(result), None);
                         return Ok(None);
                     }
                     Err(mpsc::TryRecvError::Empty) => return Ok(None),
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        *download = PendingRequest::Response(Err(Arc::from(
-                            "Request channel disconnected unexpectedly".to_string(),
-                        )));
+                        *download = (
+                            PendingRequest::Response(Err(Arc::from(
+                                "Request channel disconnected unexpectedly".to_string(),
+                            ))),
+                            None,
+                        );
                         return Ok(None);
                     }
                 },
-                PendingRequest::Response(ref result) => {
+                (PendingRequest::Response(result), _) => {
                     return result.clone().map(Some);
                 }
             }
@@ -707,7 +761,7 @@ impl RequestCache {
                 // });
                 self.user_action = Some(PendingRequest::Pending(receiver));
             }
-            Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+            Some(PendingRequest::Pending(pending)) => match pending.try_recv() {
                 Ok(result) => {
                     self.user_action = Some(PendingRequest::Response(result));
                 }
@@ -724,7 +778,7 @@ impl RequestCache {
     pub fn resolve_user_action(&mut self) -> PendingResponse<Uuid> {
         if let Some(user_action) = &mut self.user_action {
             match user_action {
-                PendingRequest::Pending(ref pending) => match pending.try_recv() {
+                PendingRequest::Pending(pending) => match pending.try_recv() {
                     Ok(result) => {
                         *user_action = PendingRequest::Response(result);
                         return Ok(None);
@@ -737,7 +791,7 @@ impl RequestCache {
                         return Ok(None);
                     }
                 },
-                PendingRequest::Response(ref result) => {
+                PendingRequest::Response(result) => {
                     return result.clone().map(Some);
                 }
             }
@@ -808,9 +862,23 @@ impl RequestCache {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Progress {
+    pub total: usize,
+    pub batched: usize, // only on uploads, just allows us to color part of the progress bar to show batched uploads
+    pub completed: usize,
+    // pub current_progress: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ProgressType {
+    Batched(usize),
+    Transferred(usize),
+}
+
 fn generic_sync_request(
     either_is_some: bool,
-    request_storage: &mut Option<PendingRequest<Uuid>>,
+    request_storage: &mut Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
     repository: Arc<Repository>,
     upload: bool,
     button_text: String,
@@ -824,7 +892,8 @@ fn generic_sync_request(
     match *request_storage {
         None => {
             let (sender, receiver) = mpsc::channel();
-            *request_storage = Some(PendingRequest::Pending(receiver));
+            let (progress_sender, progress_receiver) = mpsc::channel();
+            *request_storage = Some((PendingRequest::Pending(receiver), Some(progress_receiver)));
             std::thread::spawn(move || {
                 match crate::dialogue::rfd_confirm_response(&button_text, skip_confirmation) {
                     Ok(true) => {}
@@ -844,7 +913,7 @@ fn generic_sync_request(
                         return;
                     }
                 }
-                if let Err(e) = sync_request(repository, upload) {
+                if let Err(e) = sync_request(repository, upload, progress_sender) {
                     log::error!("Failed to sync files: {e}");
                     if let Err(send_error) = sender.send(Err(e)) {
                         log::error!("Failed to send sync error response: {send_error}");
@@ -855,24 +924,29 @@ fn generic_sync_request(
             });
             Ok(None)
         }
-        Some(PendingRequest::Pending(ref pending)) => match pending.try_recv() {
+        Some((PendingRequest::Pending(ref pending), _)) => match pending.try_recv() {
             Ok(result) => {
-                *request_storage = Some(PendingRequest::Response(result));
+                *request_storage = Some((PendingRequest::Response(result), None));
                 Ok(None)
             }
             Err(mpsc::TryRecvError::Empty) => Ok(None),
             Err(mpsc::TryRecvError::Disconnected) => {
-                *request_storage = Some(PendingRequest::Response(Err(Arc::from(
-                    "Request channel disconnected unexpectedly".to_string(),
-                ))));
+                *request_storage = Some((
+                    PendingRequest::Response(Err(Arc::from("Request channel disconnected unexpectedly".to_string()))),
+                    None,
+                ));
                 Ok(None)
             }
         },
-        Some(PendingRequest::Response(ref result)) => result.clone().map(Some),
+        Some((PendingRequest::Response(ref result), _)) => result.clone().map(Some),
     }
 }
 
-fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str>> {
+fn sync_request(
+    repository: Arc<Repository>,
+    upload: bool,
+    progress_sender: mpsc::Sender<Progress>,
+) -> Result<(), Arc<str>> {
     let mut actions = Vec::new();
     let diffs = if upload {
         repository.local_pitignore_diff.iter()
@@ -922,9 +996,39 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
             }
         }
     }
+    let mut progress = Progress {
+        total: actions
+            .iter()
+            .filter(|a| a.action_type == ActionType::Upload || a.action_type == ActionType::Download)
+            .count(),
+        batched: 0,
+        completed: 0,
+        // current_progress: 0.0,
+    };
+    progress_sender
+        .send(progress)
+        .map_err(|e| Arc::from(format!("Failed to send initial progress: {e}")))?;
+    let (snd, rcv) = mpsc::channel::<ProgressType>();
     let mut pending_batched_uploads = Vec::new();
     let url_prefix = format!("{PUBLIC_URL}/{}", repository.local.uuid);
     for action in actions {
+        let mut changed = false;
+        while let Ok(progress_made) = rcv.try_recv() {
+            changed = true;
+            match progress_made {
+                ProgressType::Batched(count) => {
+                    progress.batched += count;
+                }
+                ProgressType::Transferred(count) => {
+                    progress.completed += count;
+                }
+            }
+        }
+        if changed {
+            progress_sender
+                .send(progress)
+                .map_err(|e| Arc::from(format!("Failed to send progress update: {e}")))?;
+        }
         let mut local_path = repository.local.path.clone();
         local_path.push(action.full_path.strip_prefix("/").unwrap_or(&*action.full_path));
         let remote_path = format!(
@@ -939,6 +1043,7 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
         if (action.action_type == ActionType::DeleteFromDisk || action.action_type == ActionType::Download)
             && local_path.exists()
         {
+            // this function has side effects so call it here specifically
             if let Err(e) = std::fs::remove_file(&local_path) {
                 log::warn!("Failed to delete file {}: {e}", local_path.display());
             }
@@ -989,15 +1094,28 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
                     )
                     .map_err(|e| Arc::from(format!("Failed to create upload file: {e}")))?,
                 );
+                snd.send(ProgressType::Batched(1))
+                    .map_err(|e| Arc::from(format!("Failed to send batched upload progress: {e}")))?;
                 if pending_batched_uploads.iter().map(|f| f.size()).sum::<usize>() as f64
-                    > (pitsu_lib::MAX_UPLOAD_SIZE as f64) * 0.50
+                    > (pitsu_lib::MAX_UPLOAD_SIZE as f64) * 0.10
                 {
-                    let mut new_uploads = Vec::new();
+                    let mut new_uploads = if pending_batched_uploads.len() == 1 {
+                        vec![]
+                    } else {
+                        vec![
+                            pending_batched_uploads
+                                .pop()
+                                .expect("Pending uploads should not be empty"),
+                        ]
+                    };
                     std::mem::swap(&mut pending_batched_uploads, &mut new_uploads);
+                    let size = new_uploads.len();
                     if let Err(e) = upload_batched_files(&url_prefix, FileUpload { files: new_uploads }) {
                         log::error!("Failed to upload files: {e}");
                         return Err(e);
                     }
+                    snd.send(ProgressType::Transferred(size))
+                        .map_err(|e| Arc::from(format!("Failed to send upload progress: {e}")))?;
                 }
                 if let Err(e) = await_sender.send(Ok(())) {
                     log::error!("Failed to send upload completion: {e}");
@@ -1030,38 +1148,42 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
                     });
                 });
             }
-            ActionType::Download => ehttp::fetch(get_request(&remote_path), move |response| {
-                let response = match response {
-                    Ok(resp) => resp,
-                    Err(e) => {
+            ActionType::Download => {
+                let snd = snd.clone();
+                ehttp::fetch(get_request(&remote_path), move |response| {
+                    let response = match response {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            await_sender
+                                .send(Err(Arc::from(format!("Failed to download file: {e}"))))
+                                .unwrap_or_else(|e| {
+                                    log::error!("Failed to send error response: {e}");
+                                });
+                            return;
+                        }
+                    };
+                    if response.status != 200 {
                         await_sender
-                            .send(Err(Arc::from(format!("Failed to download file: {e}"))))
+                            .send(Err(Arc::from(format!("Failed to download file: {}", response.status))))
                             .unwrap_or_else(|e| {
                                 log::error!("Failed to send error response: {e}");
                             });
                         return;
                     }
-                };
-                if response.status != 200 {
-                    await_sender
-                        .send(Err(Arc::from(format!("Failed to download file: {}", response.status))))
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to send error response: {e}");
-                        });
-                    return;
-                }
-                if let Err(e) = std::fs::write(&local_path, response.bytes) {
-                    await_sender
-                        .send(Err(Arc::from(format!("Failed to write to {local_path:?}: {e}"))))
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to send error response: {e}");
-                        });
-                    return;
-                }
-                await_sender.send(Ok(())).unwrap_or_else(|e| {
-                    log::error!("Failed to send download completion: {e}");
-                });
-            }),
+                    if let Err(e) = std::fs::write(&local_path, response.bytes) {
+                        await_sender
+                            .send(Err(Arc::from(format!("Failed to write to {local_path:?}: {e}"))))
+                            .unwrap_or_else(|e| {
+                                log::error!("Failed to send error response: {e}");
+                            });
+                        return;
+                    }
+                    await_sender.send(Ok(())).unwrap_or_else(|e| {
+                        log::error!("Failed to send download completion: {e}");
+                    });
+                    snd.send(ProgressType::Transferred(1)).ok();
+                })
+            }
         }
         match await_receiver.recv() {
             Ok(Ok(())) => {
@@ -1078,6 +1200,7 @@ fn sync_request(repository: Arc<Repository>, upload: bool) -> Result<(), Arc<str
         }
     }
     if !pending_batched_uploads.is_empty() {
+        // This function has side effects
         if let Err(e) = upload_batched_files(
             &url_prefix,
             FileUpload {

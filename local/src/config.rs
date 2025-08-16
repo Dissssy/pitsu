@@ -1,10 +1,10 @@
 #![allow(unused)]
 use anyhow::Result;
 use core::panic;
-use ehttp::{fetch, Request};
+use ehttp::{Request, fetch};
 use lazy_static::lazy_static;
 use pitsu_lib::{Pitignore, RootFolder, ThisUser, VersionNumber};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -35,8 +35,10 @@ pub fn setup() {
     //         SET_API_KEY = Some(api_key.to_string());
     //     }
     // }
-    std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
-    std::env::set_var("SEQ_API_URL", env!("SEQ_API_URL"));
+    unsafe {
+        std::env::set_var("SEQ_API_KEY", env!("LOCAL_SEQ_API_KEY"));
+        std::env::set_var("SEQ_API_URL", env!("SEQ_API_URL"));
+    }
     datalust_logger::init(&format!("PITSU <{}>", CONFIG.uuid())).expect("Failed to initialize logger");
     if CONFIG.api_key().is_empty() {
         log::error!("PITSU_API_KEY is not set. Please try to download again.");
@@ -475,7 +477,7 @@ impl<T: Debug + DeserializeOwned + Send + Sync + 'static> Pending<T> {
 pub mod icons {
     use std::sync::Arc;
 
-    use eframe::egui::{include_image, IconData, ImageSource};
+    use eframe::egui::{IconData, ImageSource, include_image};
     use image::ImageFormat;
     use lazy_static::lazy_static;
     use resvg::{tiny_skia::Pixmap, usvg::Transform};

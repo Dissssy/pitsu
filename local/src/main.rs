@@ -10,10 +10,14 @@ use self_update::self_replace;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::config::{LocalRepository, CONFIG, MAX_PATH_LENGTH};
+use crate::{
+    config::{CONFIG, LocalRepository, MAX_PATH_LENGTH},
+    double_progress_bar::DoubleProgressBar,
+};
 mod cache;
 mod config;
 mod dialogue;
+mod double_progress_bar;
 mod nerdfonts;
 
 // list of safely openable file extensions, non executable
@@ -286,7 +290,7 @@ impl eframe::App for App {
                                 ui.label("This repository is not stored locally.");
                                 if ui
                                     .add_enabled(
-                                        !self.long_running.sync_in_progress(),
+                                        self.long_running.sync_in_progress().is_none(),
                                         egui::Button::new("Download Repository"),
                                     )
                                     .clicked()
@@ -611,12 +615,38 @@ impl App {
                             .flatten()
                             .flatten()
                         {
+                            let enable_button = if let Some(progress) = self.long_running.sync_in_progress() {
+                                ui.add(
+                                    DoubleProgressBar::new(
+                                        progress.batched as f32 / progress.total as f32,
+                                        progress.completed as f32 / progress.total as f32,
+                                    )
+                                    .desired_height(12.0)
+                                    .desired_width((ui.available_width() - 240.0).max(96.0)),
+                                )
+                                .on_hover_text(if progress.batched != 0 {
+                                    format!(
+                                        "Syncing: {}/{} files ({:.2}%) ({} batched)",
+                                        progress.completed,
+                                        progress.total,
+                                        (progress.completed as f32 / progress.total as f32) * 100.0,
+                                        progress.batched - progress.completed
+                                    )
+                                } else {
+                                    format!(
+                                        "Syncing: {}/{} files ({:.2}%)",
+                                        progress.completed,
+                                        progress.total,
+                                        (progress.completed as f32 / progress.total as f32) * 100.0
+                                    )
+                                });
+                                false
+                            } else {
+                                true
+                            };
                             // Show refresh button
                             if ui
-                                .add_enabled(
-                                    !self.long_running.sync_in_progress(),
-                                    egui::Button::new(nerdfonts::REFRESH),
-                                )
+                                .add_enabled(enable_button, egui::Button::new(nerdfonts::REFRESH))
                                 .clicked()
                             {
                                 self.long_running
@@ -650,11 +680,11 @@ impl App {
                                         .replace(" 1 files", " 1 file")
                                         .to_string()
                                 };
-                                let upload = if self.long_running.upload_in_progress() {
-                                    ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                let upload = if self.long_running.upload_in_progress().is_some() {
+                                    ui.add_enabled(self.long_running.sync_in_progress().is_none(), egui::Spinner::new())
                                 } else {
                                     ui.add_enabled(
-                                        !self.long_running.sync_in_progress(),
+                                        self.long_running.sync_in_progress().is_none(),
                                         egui::Button::new(
                                             egui::RichText::new(nerdfonts::UPLOAD).color(egui::Color32::YELLOW),
                                         ),
@@ -712,11 +742,11 @@ impl App {
                                         .replace(" 1 files", " 1 file")
                                         .to_string()
                                 };
-                                let download = if self.long_running.download_in_progress() {
-                                    ui.add_enabled(!self.long_running.sync_in_progress(), egui::Spinner::new())
+                                let download = if self.long_running.download_in_progress().is_some() {
+                                    ui.add_enabled(false, egui::Spinner::new())
                                 } else {
                                     ui.add_enabled(
-                                        !self.long_running.sync_in_progress(),
+                                        true,
                                         egui::Button::new(
                                             egui::RichText::new(nerdfonts::DOWNLOAD).color(egui::Color32::GREEN),
                                         ),
@@ -909,7 +939,10 @@ impl App {
                     ui.close();
                 };
                 if ui
-                    .add_enabled(!self.long_running.sync_in_progress(), egui::Button::new("Change path"))
+                    .add_enabled(
+                        self.long_running.sync_in_progress().is_none(),
+                        egui::Button::new("Change path"),
+                    )
                     .on_hover_text("Change the local repository path.")
                     .clicked()
                 {
