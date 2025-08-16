@@ -18,9 +18,10 @@ use crate::{
 pub struct RequestCache {
     this_user: Option<PendingRequest<Arc<ThisUser>>>,
     users: Option<PendingRequest<Vec<User>>>,
-    upload: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
-    download: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
-    latest_progress: Option<Progress>,
+    upload: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Option<Progress>>>)>,
+    download: Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Option<Progress>>>)>,
+    latest_upload_progress: Option<Progress>,
+    latest_download_progress: Option<Progress>,
     remote_version_number: Option<PendingRequest<Arc<VersionNumber>>>,
     remote_update_bytes: Option<PendingRequest<Arc<[u8]>>>,
     create_repository: Option<PendingRequest<Arc<RemoteRepository>>>,
@@ -60,7 +61,8 @@ impl RequestCache {
             users: None,
             upload: None,
             download: None,
-            latest_progress: None,
+            latest_upload_progress: None,
+            latest_download_progress: None,
             remote_version_number: None,
             remote_update_bytes: None,
             repositories: HashMap::new(),
@@ -595,17 +597,7 @@ impl RequestCache {
         )
     }
     pub fn sync_in_progress(&mut self) -> Option<Progress> {
-        match (
-            self.upload_in_progress().or_else(|| self.download_in_progress()),
-            self.latest_progress,
-        ) {
-            (Some(progress), _) => {
-                self.latest_progress = Some(progress);
-                Some(progress)
-            }
-            (None, Some(progress)) => Some(progress),
-            (None, None) => None,
-        }
+        self.upload_in_progress().or_else(|| self.download_in_progress())
     }
     pub fn upload_in_progress(&mut self) -> Option<Progress> {
         match (
@@ -618,11 +610,11 @@ impl RequestCache {
                     None
                 }
             }),
-            self.latest_progress,
+            self.latest_upload_progress,
         ) {
             (Some(progress), _) => {
-                self.latest_progress = Some(progress);
-                Some(progress)
+                self.latest_upload_progress = progress;
+                progress
             }
             (None, Some(progress)) => Some(progress),
             (None, None) => None,
@@ -639,11 +631,11 @@ impl RequestCache {
                     None
                 }
             }),
-            self.latest_progress,
+            self.latest_download_progress,
         ) {
             (Some(progress), _) => {
-                self.latest_progress = Some(progress);
-                Some(progress)
+                self.latest_download_progress = progress;
+                progress
             }
             (None, Some(progress)) => Some(progress),
             (None, None) => None,
@@ -878,7 +870,7 @@ pub enum ProgressType {
 
 fn generic_sync_request(
     either_is_some: bool,
-    request_storage: &mut Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Progress>>)>,
+    request_storage: &mut Option<(PendingRequest<Uuid>, Option<mpsc::Receiver<Option<Progress>>>)>,
     repository: Arc<Repository>,
     upload: bool,
     button_text: String,
@@ -945,7 +937,7 @@ fn generic_sync_request(
 fn sync_request(
     repository: Arc<Repository>,
     upload: bool,
-    progress_sender: mpsc::Sender<Progress>,
+    progress_sender: mpsc::Sender<Option<Progress>>,
 ) -> Result<(), Arc<str>> {
     let mut actions = Vec::new();
     let diffs = if upload {
@@ -1006,7 +998,7 @@ fn sync_request(
         // current_progress: 0.0,
     };
     progress_sender
-        .send(progress)
+        .send(Some(progress))
         .map_err(|e| Arc::from(format!("Failed to send initial progress: {e}")))?;
     let (snd, rcv) = mpsc::channel::<ProgressType>();
     let mut pending_batched_uploads = Vec::new();
@@ -1026,7 +1018,7 @@ fn sync_request(
         }
         if changed {
             progress_sender
-                .send(progress)
+                .send(Some(progress))
                 .map_err(|e| Arc::from(format!("Failed to send progress update: {e}")))?;
         }
         let mut local_path = repository.local.path.clone();
@@ -1211,6 +1203,9 @@ fn sync_request(
             return Err(e);
         }
     }
+    progress_sender
+        .send(None)
+        .map_err(|e| Arc::from(format!("Failed to send final progress update: {e}")))?;
     Ok(())
 }
 
