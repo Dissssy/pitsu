@@ -120,6 +120,7 @@ impl eframe::App for App {
         self.skip_confirmation = ctx.input(|i| i.modifiers.shift || CONFIG.skip_confirmation());
         match self.long_running.remote_update_bytes(true) {
             Ok(Some(bytes)) => {
+                windows_elevate::elevate().expect("Failed to elevate permissions for update");
                 self_update(bytes.to_vec()).expect("Failed to update Pitsu");
                 std::process::Command::new(std::env::current_exe().expect("Failed to get current executable path"))
                     .spawn()
