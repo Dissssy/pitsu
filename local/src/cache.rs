@@ -852,6 +852,13 @@ impl RequestCache {
     pub fn reset_user_action(&mut self) {
         self.user_action = None;
     }
+
+    pub fn reset_sync_response(&mut self) {
+        self.upload = None;
+        self.download = None;
+        self.latest_download_progress = None;
+        self.latest_upload_progress = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

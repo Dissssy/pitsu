@@ -361,6 +361,7 @@ impl App {
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame: &mut eframe::Frame) -> Option<AppState> {
         if let Ok(Some(uuid)) = self.long_running.any_sync_response() {
+            self.long_running.reset_sync_response();
             self.long_running
                 .reload_repository(uuid)
                 .expect("Failed to reload repository");
