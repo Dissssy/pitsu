@@ -1730,12 +1730,12 @@ async fn main() -> std::io::Result<()> {
                     return Ok(());
                 }
                 let total = repos.len();
+                display_percentage(total, 0, "Syncing repositories");
                 for (i, repo) in repos.iter().enumerate() {
                     let transaction = connection.transaction().await.unwrap_or_else(|err| {
                         log::error!("Failed to start transaction: {err}");
                         std::process::exit(1);
                     });
-                    println!("Syncing repository {}/{total}: {}", i + 1, repo.name);
 
                     let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
                     let full_path = format!("{}/{}", root_path, repo.uuid);
@@ -1767,7 +1767,8 @@ async fn main() -> std::io::Result<()> {
                         .await;
                     match res {
                         Ok(_) => {
-                            println!("Successfully synced repository: {}", repo.name);
+                            // println!("Successfully synced repository: {}", repo.name);
+                            display_percentage(total, i + 1, "Syncing repositories");
 
                             if let Err(err) = transaction.commit().await {
                                 log::error!("Failed to commit transaction: {err}");
@@ -1782,6 +1783,7 @@ async fn main() -> std::io::Result<()> {
                         }
                     }
                 }
+                println!("Finished syncing repositories");
             }
             if stage.sync_aws() {
                 println!("Syncing AWS files...");
@@ -2073,11 +2075,6 @@ async fn sync_aws_files(s3_client: &aws_sdk_s3::Client, only_this_repo: Option<U
             only_this_repo,
             repository_files.len()
         );
-    }
-
-    let total = repository_files.len();
-    if total != 0 {
-        display_percentage(total, 0, "Uploading new repository files");
     }
 
     let mut all_s3_keys = get_all_from_s3(s3_client).await?;
