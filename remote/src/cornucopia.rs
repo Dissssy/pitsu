@@ -337,52 +337,7 @@ repository_uuid: &'a uuid::Uuid,) -> GetAllUsersWithAccessQuery<'a,C, GetAllUser
         |row| { GetAllUsersWithAccessBorrowed { user_uuid: row.get(0),access_level: row.get(1),username: row.get(2),} }, mapper: |it| { <GetAllUsersWithAccess>::from(it) },
     }
 } }}pub mod files
-{ use futures::{{StreamExt, TryStreamExt}};use futures; use cornucopia_async::GenericClient;#[derive( Debug)] pub struct CreateParams<T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,> { pub repository_uuid: uuid::Uuid,pub file_path: T1,pub aws_s3_object_key: T2,}#[derive( Debug)] pub struct GetParams<T1: cornucopia_async::StringSql,> { pub file_path: T1,pub repository_uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateOrCreateParams<T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,> { pub aws_s3_object_key: T1,pub file_path: T2,pub repository_uuid: uuid::Uuid,}#[derive( Debug)] pub struct DeleteParams<T1: cornucopia_async::StringSql,> { pub file_path: T1,pub repository_uuid: uuid::Uuid,}#[derive( Debug, Clone, PartialEq,)] pub struct Create
-{ pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : String,pub aws_s3_object_key : String,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct CreateBorrowed<'a> { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : &'a str,pub aws_s3_object_key : &'a str,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
-impl<'a> From<CreateBorrowed<'a>> for Create
-{
-    fn from(CreateBorrowed { uuid,repository_uuid,file_path,aws_s3_object_key,created_at,updated_at,}: CreateBorrowed<'a>) -> Self
-    { Self { uuid,repository_uuid,file_path: file_path.into(),aws_s3_object_key: aws_s3_object_key.into(),created_at,updated_at,} }
-}pub struct CreateQuery<'a, C: GenericClient, T, const N: usize>
-{
-    client: &'a  C, params:
-    [&'a (dyn postgres_types::ToSql + Sync); N], stmt: &'a mut
-    cornucopia_async::private::Stmt, extractor: fn(&tokio_postgres::Row) -> CreateBorrowed,
-    mapper: fn(CreateBorrowed) -> T,
-} impl<'a, C, T:'a, const N: usize> CreateQuery<'a, C, T, N> where C:
-GenericClient
-{
-    pub fn map<R>(self, mapper: fn(CreateBorrowed) -> R) ->
-    CreateQuery<'a,C,R,N>
-    {
-        CreateQuery
-        {
-            client: self.client, params: self.params, stmt: self.stmt,
-            extractor: self.extractor, mapper,
-        }
-    } pub async fn one(self) -> Result<T, tokio_postgres::Error>
-    {
-        let stmt = self.stmt.prepare(self.client).await?; let row =
-        self.client.query_one(stmt, &self.params).await?;
-        Ok((self.mapper)((self.extractor)(&row)))
-    } pub async fn all(self) -> Result<Vec<T>, tokio_postgres::Error>
-    { self.iter().await?.try_collect().await } pub async fn opt(self) ->
-    Result<Option<T>, tokio_postgres::Error>
-    {
-        let stmt = self.stmt.prepare(self.client).await?;
-        Ok(self.client.query_opt(stmt, &self.params) .await?
-        .map(|row| (self.mapper)((self.extractor)(&row))))
-    } pub async fn iter(self,) -> Result<impl futures::Stream<Item = Result<T,
-    tokio_postgres::Error>> + 'a, tokio_postgres::Error>
-    {
-        let stmt = self.stmt.prepare(self.client).await?; let it =
-        self.client.query_raw(stmt,
-        cornucopia_async::private::slice_iter(&self.params)) .await?
-        .map(move |res|
-        res.map(|row| (self.mapper)((self.extractor)(&row)))) .into_stream();
-        Ok(it)
-    }
-}#[derive( Debug, Clone, PartialEq,)] pub struct Get
+{ use futures::{{StreamExt, TryStreamExt}};use futures; use cornucopia_async::GenericClient;#[derive( Debug)] pub struct GetParams<T1: cornucopia_async::StringSql,> { pub file_path: T1,pub repository_uuid: uuid::Uuid,}#[derive( Debug)] pub struct UpdateOrCreateParams<T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,> { pub file_path: T1,pub repository_uuid: uuid::Uuid,pub aws_s3_object_key: T2,}#[derive( Debug)] pub struct DeleteParams<T1: cornucopia_async::StringSql,> { pub file_path: T1,pub repository_uuid: uuid::Uuid,}#[derive( Debug, Clone, PartialEq,)] pub struct Get
 { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : String,pub aws_s3_object_key : String,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct GetBorrowed<'a> { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : &'a str,pub aws_s3_object_key : &'a str,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
 impl<'a> From<GetBorrowed<'a>> for Get
 {
@@ -517,6 +472,51 @@ GenericClient
         res.map(|row| (self.mapper)((self.extractor)(&row)))) .into_stream();
         Ok(it)
     }
+}#[derive( Debug, Clone, PartialEq,)] pub struct UpdateOrCreate
+{ pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : String,pub aws_s3_object_key : String,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct UpdateOrCreateBorrowed<'a> { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : &'a str,pub aws_s3_object_key : &'a str,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
+impl<'a> From<UpdateOrCreateBorrowed<'a>> for UpdateOrCreate
+{
+    fn from(UpdateOrCreateBorrowed { uuid,repository_uuid,file_path,aws_s3_object_key,created_at,updated_at,}: UpdateOrCreateBorrowed<'a>) -> Self
+    { Self { uuid,repository_uuid,file_path: file_path.into(),aws_s3_object_key: aws_s3_object_key.into(),created_at,updated_at,} }
+}pub struct UpdateOrCreateQuery<'a, C: GenericClient, T, const N: usize>
+{
+    client: &'a  C, params:
+    [&'a (dyn postgres_types::ToSql + Sync); N], stmt: &'a mut
+    cornucopia_async::private::Stmt, extractor: fn(&tokio_postgres::Row) -> UpdateOrCreateBorrowed,
+    mapper: fn(UpdateOrCreateBorrowed) -> T,
+} impl<'a, C, T:'a, const N: usize> UpdateOrCreateQuery<'a, C, T, N> where C:
+GenericClient
+{
+    pub fn map<R>(self, mapper: fn(UpdateOrCreateBorrowed) -> R) ->
+    UpdateOrCreateQuery<'a,C,R,N>
+    {
+        UpdateOrCreateQuery
+        {
+            client: self.client, params: self.params, stmt: self.stmt,
+            extractor: self.extractor, mapper,
+        }
+    } pub async fn one(self) -> Result<T, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?; let row =
+        self.client.query_one(stmt, &self.params).await?;
+        Ok((self.mapper)((self.extractor)(&row)))
+    } pub async fn all(self) -> Result<Vec<T>, tokio_postgres::Error>
+    { self.iter().await?.try_collect().await } pub async fn opt(self) ->
+    Result<Option<T>, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?;
+        Ok(self.client.query_opt(stmt, &self.params) .await?
+        .map(|row| (self.mapper)((self.extractor)(&row))))
+    } pub async fn iter(self,) -> Result<impl futures::Stream<Item = Result<T,
+    tokio_postgres::Error>> + 'a, tokio_postgres::Error>
+    {
+        let stmt = self.stmt.prepare(self.client).await?; let it =
+        self.client.query_raw(stmt,
+        cornucopia_async::private::slice_iter(&self.params)) .await?
+        .map(move |res|
+        res.map(|row| (self.mapper)((self.extractor)(&row)))) .into_stream();
+        Ok(it)
+    }
 }#[derive( Debug, Clone, PartialEq,)] pub struct Delete
 { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : String,pub aws_s3_object_key : String,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}pub struct DeleteBorrowed<'a> { pub uuid : uuid::Uuid,pub repository_uuid : uuid::Uuid,pub file_path : &'a str,pub aws_s3_object_key : &'a str,pub created_at : time::PrimitiveDateTime,pub updated_at : time::PrimitiveDateTime,}
 impl<'a> From<DeleteBorrowed<'a>> for Delete
@@ -562,32 +562,6 @@ GenericClient
         res.map(|row| (self.mapper)((self.extractor)(&row)))) .into_stream();
         Ok(it)
     }
-}pub fn create() -> CreateStmt
-{ CreateStmt(cornucopia_async::private::Stmt::new("INSERT INTO Files (repository_uuid, file_path, aws_s3_object_key)
-    VALUES ($1, $2, $3)
-    RETURNING *")) } pub struct
-CreateStmt(cornucopia_async::private::Stmt); impl CreateStmt
-{ pub fn bind<'a, C:
-GenericClient,T1:
-cornucopia_async::StringSql,T2:
-cornucopia_async::StringSql,>(&'a mut self, client: &'a  C,
-repository_uuid: &'a uuid::Uuid,file_path: &'a T1,aws_s3_object_key: &'a T2,) -> CreateQuery<'a,C, Create,
-3>
-{
-    CreateQuery
-    {
-        client, params: [repository_uuid,file_path,aws_s3_object_key,], stmt: &mut self.0, extractor:
-        |row| { CreateBorrowed { uuid: row.get(0),repository_uuid: row.get(1),file_path: row.get(2),aws_s3_object_key: row.get(3),created_at: row.get(4),updated_at: row.get(5),} }, mapper: |it| { <Create>::from(it) },
-    }
-} }impl <'a, C: GenericClient,T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,> cornucopia_async::Params<'a,
-CreateParams<T1,T2,>, CreateQuery<'a, C, Create,
-3>, C> for CreateStmt
-{
-    fn
-    params(&'a mut self, client: &'a  C, params: &'a
-    CreateParams<T1,T2,>) -> CreateQuery<'a, C,
-    Create, 3>
-    { self.bind(client, &params.repository_uuid,&params.file_path,&params.aws_s3_object_key,) }
 }pub fn get() -> GetStmt
 { GetStmt(cornucopia_async::private::Stmt::new("SELECT * FROM Files WHERE file_path = $1 AND repository_uuid = $2")) } pub struct
 GetStmt(cornucopia_async::private::Stmt); impl GetStmt
@@ -638,33 +612,37 @@ GenericClient,>(&'a mut self, client: &'a  C,
         |row| { GetAllBorrowed { uuid: row.get(0),repository_uuid: row.get(1),file_path: row.get(2),aws_s3_object_key: row.get(3),created_at: row.get(4),updated_at: row.get(5),} }, mapper: |it| { <GetAll>::from(it) },
     }
 } }pub fn update_or_create() -> UpdateOrCreateStmt
-{ UpdateOrCreateStmt(cornucopia_async::private::Stmt::new("WITH upsert AS (
-    UPDATE Files
-    SET aws_s3_object_key = $1, updated_at = CURRENT_TIMESTAMP
-    WHERE file_path = $2 AND repository_uuid = $3
-    RETURNING *
+{ UpdateOrCreateStmt(cornucopia_async::private::Stmt::new("WITH old AS (
+	SELECT * FROM Files WHERE file_path = $1 AND repository_uuid = $2
 )
-INSERT INTO Files (repository_uuid, file_path, aws_s3_object_key)
-SELECT $3, $2, $1
-WHERE NOT EXISTS (SELECT * FROM upsert)")) } pub struct
+UPDATE Files
+SET aws_s3_object_key = $3,
+	updated_at = CURRENT_TIMESTAMP
+FROM old
+WHERE Files.file_path = old.file_path AND Files.repository_uuid = old.repository_uuid
+RETURNING old.*")) } pub struct
 UpdateOrCreateStmt(cornucopia_async::private::Stmt); impl UpdateOrCreateStmt
-{ pub async fn bind<'a, C:
+{ pub fn bind<'a, C:
 GenericClient,T1:
 cornucopia_async::StringSql,T2:
 cornucopia_async::StringSql,>(&'a mut self, client: &'a  C,
-aws_s3_object_key: &'a T1,file_path: &'a T2,repository_uuid: &'a uuid::Uuid,) -> Result<u64, tokio_postgres::Error>
+file_path: &'a T1,repository_uuid: &'a uuid::Uuid,aws_s3_object_key: &'a T2,) -> UpdateOrCreateQuery<'a,C, UpdateOrCreate,
+3>
 {
-    let stmt = self.0.prepare(client).await?;
-    client.execute(stmt, &[aws_s3_object_key,file_path,repository_uuid,]).await
-} }impl <'a, C: GenericClient + Send + Sync, T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,>
-cornucopia_async::Params<'a, UpdateOrCreateParams<T1,T2,>, std::pin::Pin<Box<dyn futures::Future<Output = Result<u64,
-tokio_postgres::Error>> + Send + 'a>>, C> for UpdateOrCreateStmt
+    UpdateOrCreateQuery
+    {
+        client, params: [file_path,repository_uuid,aws_s3_object_key,], stmt: &mut self.0, extractor:
+        |row| { UpdateOrCreateBorrowed { uuid: row.get(0),repository_uuid: row.get(1),file_path: row.get(2),aws_s3_object_key: row.get(3),created_at: row.get(4),updated_at: row.get(5),} }, mapper: |it| { <UpdateOrCreate>::from(it) },
+    }
+} }impl <'a, C: GenericClient,T1: cornucopia_async::StringSql,T2: cornucopia_async::StringSql,> cornucopia_async::Params<'a,
+UpdateOrCreateParams<T1,T2,>, UpdateOrCreateQuery<'a, C, UpdateOrCreate,
+3>, C> for UpdateOrCreateStmt
 {
     fn
     params(&'a mut self, client: &'a  C, params: &'a
-    UpdateOrCreateParams<T1,T2,>) -> std::pin::Pin<Box<dyn futures::Future<Output = Result<u64,
-    tokio_postgres::Error>> + Send + 'a>>
-    { Box::pin(self.bind(client, &params.aws_s3_object_key,&params.file_path,&params.repository_uuid,)) }
+    UpdateOrCreateParams<T1,T2,>) -> UpdateOrCreateQuery<'a, C,
+    UpdateOrCreate, 3>
+    { self.bind(client, &params.file_path,&params.repository_uuid,&params.aws_s3_object_key,) }
 }pub fn delete() -> DeleteStmt
 { DeleteStmt(cornucopia_async::private::Stmt::new("DELETE FROM Files WHERE file_path = $1 AND repository_uuid = $2 RETURNING *")) } pub struct
 DeleteStmt(cornucopia_async::private::Stmt); impl DeleteStmt

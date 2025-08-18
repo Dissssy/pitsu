@@ -7,11 +7,6 @@
 --     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 -- );
 
---! create
-INSERT INTO Files (repository_uuid, file_path, aws_s3_object_key)
-    VALUES (:repository_uuid, :file_path, :aws_s3_object_key)
-    RETURNING *;
-
 --! get
 SELECT * FROM Files WHERE file_path = :file_path AND repository_uuid = :repository_uuid;
 
@@ -22,15 +17,15 @@ SELECT * FROM Files WHERE repository_uuid = :repository_uuid;
 SELECT * FROM Files;
 
 --! update_or_create
-WITH upsert AS (
-    UPDATE Files
-    SET aws_s3_object_key = :aws_s3_object_key, updated_at = CURRENT_TIMESTAMP
-    WHERE file_path = :file_path AND repository_uuid = :repository_uuid
-    RETURNING *
+WITH old AS (
+	SELECT * FROM Files WHERE file_path = :file_path AND repository_uuid = :repository_uuid
 )
-INSERT INTO Files (repository_uuid, file_path, aws_s3_object_key)
-SELECT :repository_uuid, :file_path, :aws_s3_object_key
-WHERE NOT EXISTS (SELECT * FROM upsert);
+UPDATE Files
+SET aws_s3_object_key = :aws_s3_object_key,
+	updated_at = CURRENT_TIMESTAMP
+FROM old
+WHERE Files.file_path = old.file_path AND Files.repository_uuid = old.repository_uuid
+RETURNING old.*;
 
 --! delete
 DELETE FROM Files WHERE file_path = :file_path AND repository_uuid = :repository_uuid RETURNING *;

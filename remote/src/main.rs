@@ -628,6 +628,7 @@ async fn repository_path(
     req: actix_web::HttpRequest,
     path_stuff: actix_web::web::Path<(uuid::Uuid, String)>,
     pool: Data<Pool>,
+    client: Data<S3Client>,
 ) -> impl Responder {
     let pool = pool.into_inner();
     let user = match get_user(&req, pool.clone()).await {
@@ -740,6 +741,18 @@ async fn repository_path(
                 Ok(None) => {
                     // Fallback to serving the file from disk
                     log::warn!("File not found in database, serving from disk: {full_path}");
+                    {
+                        let pool = pool.clone();
+                        let file_path = path.clone();
+                        let repository_uuid = repo.uuid;
+                        let s3_client = (*client).clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = delayed_upload_and_insert(pool, file_path, repository_uuid, s3_client).await
+                            {
+                                log::error!("Failed to upload file to S3: {e}");
+                            }
+                        });
+                    }
                     match actix_files::NamedFile::open(full_path) {
                         Ok(file) => file.into_response(&req),
                         Err(err) => {
@@ -820,6 +833,9 @@ async fn upload_file(
     let root_path = std::env::var("ROOT_FOLDER").unwrap_or_else(|_| "repositories".to_string());
     let repo_path = format!("{}/{}", root_path, repo.uuid);
     let mut cleanup_paths = Vec::new();
+    {
+        let _ = transaction.commit().await;
+    }
     for file in &mut body.files {
         let raw_path = file.path.clone();
         let path = raw_path.trim_start_matches("/");
@@ -845,6 +861,7 @@ async fn upload_file(
             log::error!("Failed to write file: {err}");
             return HttpResponse::InternalServerError().body("Failed to write file");
         }
+        // commit what we've done so far
         // Add the file to the files table in the database and upload to S3
         {
             let bytestream = match aws_sdk_s3::primitives::ByteStream::from_path(PathBuf::from(&full_path)).await {
@@ -866,17 +883,29 @@ async fn upload_file(
             {
                 Ok(_) => {}
                 Err(err) => {
-                    log::error!("Failed to upload file to S3: {err}");
+                    log::error!("Failed to upload file to S3: {}", DisplayErrorContext(err));
                     return HttpResponse::InternalServerError().body("Failed to upload file to S3");
                 }
             };
 
-            match cornucopia::queries::files::create()
-                .bind(&transaction, &repo.uuid, &path, &object_id.to_string())
-                .one()
+            match cornucopia::queries::files::update_or_create()
+                .bind(&connection, &path, &repo.uuid, &object_id.to_string())
+                .opt()
                 .await
             {
-                Ok(_) => {}
+                Ok(Some(old_entry)) => {
+                    // File record updated
+                    log::debug!("File record updated: {old_entry:?}");
+                    // delete the old file from aws
+                    client
+                        .delete_object()
+                        .bucket(std::env!("AWS_BUCKET_NAME"))
+                        .key(old_entry.aws_s3_object_key)
+                        .send()
+                        .await
+                        .ok();
+                }
+                Ok(None) => {}
                 Err(err) => {
                     log::error!("Failed to insert file record: {err}");
                     return HttpResponse::InternalServerError().body("Failed to insert file record");
@@ -885,6 +914,13 @@ async fn upload_file(
         }
         cleanup_paths.push(full_path.clone());
     }
+    let transaction = match connection.transaction().await {
+        Ok(tx) => tx,
+        Err(err) => {
+            log::error!("Failed to start transaction: {err}");
+            return HttpResponse::InternalServerError().body("Transaction error");
+        }
+    };
 
     let root_folder = match RootFolder::ingest_folder(&repo_path.clone().into()) {
         Ok(folder) => folder,
@@ -1516,6 +1552,12 @@ async fn main() -> std::io::Result<()> {
         log::error!("Failed to create database pool: {err}");
         std::process::exit(1);
     });
+    unsafe {
+        std::env::set_var("AWS_BUCKET_NAME", std::env!("AWS_BUCKET_NAME"));
+        std::env::set_var("AWS_REGION", std::env!("AWS_REGION"));
+        std::env::set_var("AWS_ACCESS_KEY_ID", std::env!("AWS_ACCESS_KEY_ID"));
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", std::env!("AWS_SECRET_ACCESS_KEY"));
+    }
     let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::v2025_01_17()).await;
     println!("Using AWS region: {:?}", aws_config.region());
     let s3_client = aws_sdk_s3::Client::new(&aws_config);
@@ -2328,11 +2370,21 @@ async fn download_and_insert(
             .send()
             .await
             .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {}", DisplayErrorContext(err)))?;
-        cornucopia::queries::files::create()
-            .bind(&transaction, &uuid, &file_path, &s3_key)
-            .one()
+        if let Some(delete_old) = cornucopia::queries::files::update_or_create()
+            .bind(&transaction, &file_path, &uuid, &s3_key)
+            .opt()
             .await
-            .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?
+        {
+            log::debug!("File record updated: {delete_old:?}");
+            s3_client
+                .delete_object()
+                .bucket(std::env!("AWS_BUCKET_NAME"))
+                .key(delete_old.aws_s3_object_key)
+                .send()
+                .await
+                .ok();
+        }
         transaction
             .commit()
             .await
@@ -2341,4 +2393,71 @@ async fn download_and_insert(
     } else {
         Ok(false)
     }
+}
+
+async fn delayed_upload_and_insert(
+    pool: Arc<Pool>,
+    file_path: String,
+    repository_uuid: Uuid,
+    s3_client: Arc<S3Client>,
+) -> Result<()> {
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
+    let transaction = connection
+        .transaction()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
+    // upload to s3
+    let s3_key = Uuid::new_v4().to_string();
+    s3_client
+        .put_object()
+        .bucket(env!("AWS_BUCKET_NAME"))
+        .key(&s3_key)
+        .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
+        .body(
+            aws_sdk_s3::primitives::ByteStream::from_path(format!(
+                "{}/{}/{}",
+                env!("ROOT_FOLDER"),
+                repository_uuid,
+                file_path
+            ))
+            .await?,
+        )
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {err}"))?;
+    // insert into database
+    if let Some(delete_old) = cornucopia::queries::files::update_or_create()
+        .bind(&transaction, &file_path, &repository_uuid, &s3_key)
+        .opt()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?
+    {
+        log::debug!("File record updated: {delete_old:?}");
+        s3_client
+            .delete_object()
+            .bucket(std::env!("AWS_BUCKET_NAME"))
+            .key(delete_old.aws_s3_object_key)
+            .send()
+            .await
+            .ok();
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
+    Ok(())
+}
+
+use sha2::{Digest, Sha512};
+
+fn generate_aws_key_from_path(repo_uuid: &uuid::Uuid, path: &str) -> String {
+    let raw_key = format!("{repo_uuid}/{path}");
+    // sha512 hash raw_key
+    let mut hasher = Sha512::default();
+    hasher.update(raw_key.as_bytes());
+    let result = hasher.finalize();
+    format!("{result:x}")
 }

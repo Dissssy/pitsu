@@ -34,5 +34,6 @@ CREATE TABLE Files (
     file_path TEXT NOT NULL,
     aws_s3_object_key TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (file_path, repository_uuid)
 );
