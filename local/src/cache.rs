@@ -1122,7 +1122,7 @@ fn sync_request(
             }
             ActionType::DeleteFromRemote => {
                 ehttp::fetch(delete_request(&remote_path), move |response| {
-                    log::error!("Deleted file: {remote_path}");
+                    // log::warn!("Deleted file: {remote_path}");
                     let response = match response {
                         Ok(resp) => resp,
                         Err(e) => {

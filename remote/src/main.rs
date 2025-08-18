@@ -4,19 +4,18 @@ use std::{
     sync::Arc,
 };
 
-use aws_sdk_s3::Client as S3Client;
+use aws_sdk_s3::{error::DisplayErrorContext, primitives::ByteStream, Client as S3Client};
 
 use actix_web::{
     delete, get, patch, post,
     web::{Data, Json, JsonConfig},
     App, HttpResponse, HttpServer, Responder,
 };
-use aws_sdk_s3::error::DisplayErrorContext;
 use clap::Parser as _;
 mod cornucopia;
 use crate::cornucopia::queries::access::get_all_users_with_access;
 use deadpool_postgres::Pool;
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::StreamExt;
 use pitsu_lib::{
     anyhow::{self, Result},
     decode_string_base64, encode_string_base64, AccessLevel, CreateRemoteRepository, FileUpload, Pitignore,
@@ -705,17 +704,14 @@ async fn repository_path(
                 }
             }
         } else {
-            match cornucopia::queries::files::get()
-                .bind(&transaction, &path, &repo.uuid)
-                .opt()
-                .await
-            {
-                Ok(Some(file)) => {
+            let potential_key = generate_aws_key_from_path(&repo.uuid, &path);
+            match get_from_s3(&client, &potential_key).await {
+                Ok(_) => {
                     let location = format!(
                         "https://{}.s3.{}.amazonaws.com/{}",
                         std::env!("AWS_BUCKET_NAME"),
                         std::env!("AWS_REGION"),
-                        file.aws_s3_object_key
+                        potential_key
                     );
                     match HttpResponse::TemporaryRedirect()
                         .append_header(("Location", location.as_str()))
@@ -738,18 +734,33 @@ async fn repository_path(
                         }
                     }
                 }
-                Ok(None) => {
+                Err(_) => {
                     // Fallback to serving the file from disk
-                    log::warn!("File not found in database, serving from disk: {full_path}");
+                    log::warn!("File not found on S3, serving from disk: {full_path}");
                     {
-                        let pool = pool.clone();
-                        let file_path = path.clone();
+                        let path = path.clone();
                         let repository_uuid = repo.uuid;
                         let s3_client = (*client).clone();
                         tokio::spawn(async move {
-                            if let Err(e) = delayed_upload_and_insert(pool, file_path, repository_uuid, s3_client).await
-                            {
-                                log::error!("Failed to upload file to S3: {e}");
+                            // if let Err(e) = delayed_upload_and_insert(pool, file_path, repository_uuid, s3_client).await
+                            // {
+                            //     log::error!("Failed to upload file to S3: {e}");
+                            // }
+                            match get_byte_stream(&repository_uuid, &path).await {
+                                Ok(byte_stream) => {
+                                    if let Err(e) = put_in_s3(
+                                        &s3_client,
+                                        &generate_aws_key_from_path(&repository_uuid, &path),
+                                        byte_stream,
+                                    )
+                                    .await
+                                    {
+                                        log::error!("Failed to upload file to S3: {e}");
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to get byte stream: {e}");
+                                }
                             }
                         });
                     }
@@ -760,10 +771,6 @@ async fn repository_path(
                             HttpResponse::InternalServerError().body("File not found")
                         }
                     }
-                }
-                Err(e) => {
-                    log::error!("Failed to fetch file: {e}");
-                    HttpResponse::InternalServerError().body("Failed to fetch file")
                 }
             }
         }
@@ -861,55 +868,27 @@ async fn upload_file(
             log::error!("Failed to write file: {err}");
             return HttpResponse::InternalServerError().body("Failed to write file");
         }
-        // commit what we've done so far
-        // Add the file to the files table in the database and upload to S3
-        {
-            let bytestream = match aws_sdk_s3::primitives::ByteStream::from_path(PathBuf::from(&full_path)).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    log::error!("Failed to create byte stream: {err}");
-                    return HttpResponse::InternalServerError().body("Failed to create byte stream");
-                }
-            };
-            let object_id = Uuid::new_v4();
-            match client
-                .put_object()
-                .bucket(std::env!("AWS_BUCKET_NAME"))
-                .key(object_id.to_string())
-                .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
-                .body(bytestream)
-                .send()
-                .await
-            {
-                Ok(_) => {}
-                Err(err) => {
-                    log::error!("Failed to upload file to S3: {}", DisplayErrorContext(err));
-                    return HttpResponse::InternalServerError().body("Failed to upload file to S3");
-                }
-            };
 
-            match cornucopia::queries::files::update_or_create()
-                .bind(&connection, &path, &repo.uuid, &object_id.to_string())
-                .opt()
-                .await
-            {
-                Ok(Some(old_entry)) => {
-                    // File record updated
-                    log::debug!("File record updated: {old_entry:?}");
-                    // delete the old file from aws
-                    client
-                        .delete_object()
-                        .bucket(std::env!("AWS_BUCKET_NAME"))
-                        .key(old_entry.aws_s3_object_key)
-                        .send()
-                        .await
-                        .ok();
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    log::error!("Failed to insert file record: {err}");
-                    return HttpResponse::InternalServerError().body("Failed to insert file record");
-                }
+        let byte_stream = match get_byte_stream(&repo.uuid, &file.path).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                log::error!("Failed to get byte stream: {err}");
+                return HttpResponse::InternalServerError().body("Failed to get byte stream");
+            }
+        };
+
+        // Add the file to the files table in the database and upload to S3
+        match put_in_s3(
+            &client,
+            &generate_aws_key_from_path(&repo.uuid, &file.path),
+            byte_stream,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                log::error!("Failed to upload file to S3: {err}");
+                return HttpResponse::InternalServerError().body("Failed to upload file to S3");
             }
         }
         cleanup_paths.push(full_path.clone());
@@ -1092,33 +1071,9 @@ async fn delete_file(
         return HttpResponse::NotFound().body("File or directory not found");
     }
 
-    // Delete file from table and delete from S3
-    {
-        match cornucopia::queries::files::delete()
-            .bind(&transaction, &path, &repo.uuid)
-            .one()
-            .await
-        {
-            Ok(entry) => {
-                // delete from S3
-                tokio::spawn(async move {
-                    if let Err(err) = client
-                        .delete_object()
-                        .bucket(env!("AWS_BUCKET_NAME"))
-                        .key(entry.aws_s3_object_key)
-                        .send()
-                        .await
-                        .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))
-                    {
-                        log::error!("Failed to delete S3 object: {err}");
-                    }
-                });
-            }
-            Err(err) => {
-                log::error!("Failed to delete file record: {err}");
-                return HttpResponse::InternalServerError().body("Failed to delete file record");
-            }
-        }
+    // Delete file from S3
+    if let Err(err) = remove_from_s3(&client, &generate_aws_key_from_path(&repo.uuid, &path)).await {
+        log::warn!("Failed to delete S3 object: {err}");
     }
 
     let root_folder = match RootFolder::ingest_folder(&format!("{}/{}", root_path, repo.uuid).into()) {
@@ -1522,25 +1477,25 @@ enum RepositoryCommand {
 
 #[derive(clap::Subcommand, PartialEq, Eq)]
 enum RepositorySyncStage {
-    All,
-    Hashes,
+    All { repo: Option<Uuid> },
+    Hash { repo: Option<Uuid> },
     Aws { repo: Option<Uuid> },
 }
 
 impl RepositorySyncStage {
     fn sync_hashes(&self) -> bool {
-        matches!(self, RepositorySyncStage::All | RepositorySyncStage::Hashes)
+        matches!(self, RepositorySyncStage::All { .. } | RepositorySyncStage::Hash { .. })
     }
 
     fn sync_aws(&self) -> bool {
-        matches!(self, RepositorySyncStage::All | RepositorySyncStage::Aws { .. })
+        matches!(self, RepositorySyncStage::All { .. } | RepositorySyncStage::Aws { .. })
     }
 
-    fn aws_repo(&self) -> Option<Uuid> {
-        if let RepositorySyncStage::Aws { repo } = self {
-            *repo
-        } else {
-            None
+    fn repo(&self) -> Option<Uuid> {
+        match self {
+            RepositorySyncStage::All { repo }
+            | RepositorySyncStage::Hash { repo }
+            | RepositorySyncStage::Aws { repo } => *repo,
         }
     }
 }
@@ -1749,6 +1704,7 @@ async fn main() -> std::io::Result<()> {
         Command::Repo {
             repository_command: RepositoryCommand::Sync { stage },
         } => {
+            let repo = stage.repo();
             if stage.sync_hashes() {
                 println!("Syncing repository hashes...");
                 let mut connection = pool.get().await.unwrap_or_else(|err| {
@@ -1756,7 +1712,7 @@ async fn main() -> std::io::Result<()> {
                     std::process::exit(1);
                 });
 
-                let repos = crate::cornucopia::queries::repository::get_all()
+                let mut repos = crate::cornucopia::queries::repository::get_all()
                     .bind(&connection)
                     .all()
                     .await
@@ -1764,6 +1720,11 @@ async fn main() -> std::io::Result<()> {
                         log::error!("Failed to fetch repositories: {err}");
                         std::process::exit(1);
                     });
+
+                if let Some(repo_uuid) = repo {
+                    repos.retain(|r| r.uuid == repo_uuid);
+                }
+
                 if repos.is_empty() {
                     println!("No repositories found to sync.");
                     return Ok(());
@@ -1824,7 +1785,7 @@ async fn main() -> std::io::Result<()> {
             }
             if stage.sync_aws() {
                 println!("Syncing AWS files...");
-                match sync_aws_files(&pool, &s3_client, stage.aws_repo()).await {
+                match sync_aws_files(&s3_client, repo).await {
                     Ok(_) => {
                         println!("Successfully synced AWS files");
                     }
@@ -2058,46 +2019,15 @@ fn get_client_version() -> Result<VersionNumber> {
     VersionNumber::new(&client_path)
 }
 
-async fn sync_aws_files(pool: &Pool, s3_client: &aws_sdk_s3::Client, only_this_repo: Option<Uuid>) -> Result<()> {
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
-    let transaction = connection
-        .transaction()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
-    // we need to go through every single file in every single repository and ensure that they exist within the Files table (and have a valid aws S3 object key)
-    let mut table_files: Vec<(Uuid, String, String)> = vec![];
-    {
-        let raw_table_files = cornucopia::queries::files::get_all()
-            .bind(&transaction)
-            .all()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to fetch files: {err}"))?;
-        for file in raw_table_files {
-            // ensure the s3 object key is valid, if not, delete this entry from the database
-            if s3_client
-                .head_object()
-                .bucket(env!("AWS_BUCKET_NAME"))
-                .key(&file.aws_s3_object_key)
-                .send()
-                .await
-                .is_err()
-            {
-                cornucopia::queries::files::delete()
-                    .bind(&transaction, &file.file_path, &file.repository_uuid)
-                    .one()
-                    .await
-                    .map_err(|err| anyhow::anyhow!("Failed to delete file with invalid S3 key: {err}"))?;
-                continue;
-            }
-            table_files.push((file.repository_uuid, file.file_path, file.aws_s3_object_key));
-        }
-    }
-    println!("Found {} files in the database", table_files.len());
+#[derive(Debug, Clone)]
+struct RepositoryFile {
+    s3_key: S3Key,
+    full_path: PathBuf,
+    repo_uuid: Uuid,
+}
 
-    let mut repository_files: Vec<(Uuid, String)> = vec![];
+async fn sync_aws_files(s3_client: &aws_sdk_s3::Client, only_this_repo: Option<Uuid>) -> Result<()> {
+    let mut repository_files: Vec<RepositoryFile> = vec![];
     {
         // get all repository directories out of the root folder by iterating over every folder in ROOT_FOLDER and attempting to parse the folders name as a uuid
         let mut raw_repository_folders = vec![]; // will be walked later
@@ -2120,7 +2050,11 @@ async fn sync_aws_files(pool: &Pool, s3_client: &aws_sdk_s3::Client, only_this_r
                             .strip_prefix(&path)
                             .expect("Failed to strip prefix")
                             .to_path_buf();
-                        repository_files.push((uuid, relative_path.display().to_string()));
+                        repository_files.push(RepositoryFile {
+                            s3_key: generate_aws_key_from_path(&uuid, &relative_path.display().to_string()),
+                            full_path: relative_path,
+                            repo_uuid: uuid,
+                        });
                     }
                     Ok(false) => {}
                     Err(e) => {
@@ -2133,199 +2067,103 @@ async fn sync_aws_files(pool: &Pool, s3_client: &aws_sdk_s3::Client, only_this_r
     println!("Found {} repository files", repository_files.len());
 
     if let Some(only_this_repo) = only_this_repo {
-        table_files.retain(|(uuid, _, _)| *uuid == only_this_repo);
-        repository_files.retain(|(uuid, _)| *uuid == only_this_repo);
+        repository_files.retain(|file| file.repo_uuid == only_this_repo);
         println!(
-            "Filtered to only repository {}, {} database files and {} repository files",
+            "Filtered to only repository {}, {} repository files",
             only_this_repo,
-            table_files.len(),
             repository_files.len()
         );
     }
 
-    let table_files: Arc<[(Uuid, String, String)]> = Arc::from(table_files);
-
-    let total = table_files.len();
-    if total != 0 {
-        display_percentage(total, 0, "Checking repository files");
-    }
-    // first walk every database entry and ensure the file exists on disk, if not, remove the entry from the database, and delete the file from the s3 bucket
-    for (i, (uuid, file_path, s3_key)) in table_files.iter().enumerate() {
-        if !repository_files.contains(&(*uuid, file_path.clone())) {
-            cornucopia::queries::files::delete()
-                .bind(&transaction, &file_path, uuid)
-                .one()
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to delete file from database: {err}"))?;
-            s3_client
-                .delete_object()
-                .bucket(env!("AWS_BUCKET_NAME"))
-                .key(s3_key)
-                .send()
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))?;
-        }
-        display_percentage(total, i + 1, "Checking repository files");
-    }
-    println!("Finished cleaning up database entries");
-
-    transaction
-        .commit()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
     let total = repository_files.len();
     if total != 0 {
         display_percentage(total, 0, "Uploading new repository files");
     }
-    // now walk every file on disk, if the file does not exist within the database, upload the file to S3, get the object ID, and create the database entry
-    let mut orderless = FuturesUnordered::new();
-    for (uuid, file_path) in repository_files.iter() {
-        let pool = pool.clone();
-        let table_files = table_files.clone();
-        let client = s3_client.clone();
-        orderless.push(tokio::spawn(download_and_insert(
-            pool,
-            table_files,
-            client,
-            *uuid,
-            file_path.clone(),
-        )))
-    }
-    let mut i = 0;
-    while let Some(res) = orderless.next().await {
-        i += 1;
-        match res {
-            Ok(Ok(false)) => {
-                display_percentage(total, i, "Skipped existing repository file");
-            }
-            Ok(Ok(true)) => {
-                display_percentage(total, i, "Uploaded new repository file");
-            }
-            Ok(Err(err)) => {
-                log::error!("Failed to upload and insert file: {err}");
-            }
-            Err(err) => {
-                log::error!("Task panicked: {err}");
-            }
-        }
-        // display_percentage(total, total - orderless.len(), "Uploading new repository files");
-    }
-    println!("Finished uploading new repository files");
 
-    // now iterate over every file in the bucket, and if their key does not exist in the database, delete them from s3
-    let mut s3_keys: Vec<String> = vec![];
-    let mut continuation_token = None;
-    println!("Collecting AWS Keys");
-    println!("Collected: 0");
-    loop {
-        let list_objects = if let Some(continuation_token) = continuation_token {
-            s3_client
-                .list_objects_v2()
-                .bucket(env!("AWS_BUCKET_NAME"))
-                .continuation_token(continuation_token)
-                .send()
-                .await?
-        } else {
-            s3_client
-                .list_objects_v2()
-                .bucket(env!("AWS_BUCKET_NAME"))
-                .send()
-                .await?
-        };
-        for object in list_objects.contents.as_ref().unwrap_or(&vec![]) {
-            s3_keys.push(
-                object
-                    .key()
-                    .map(|key| key.to_string())
-                    .unwrap_or(String::from("INVALID_KEY")),
-            );
-        }
-        if !list_objects.is_truncated.unwrap_or(false) {
-            break;
-        }
-        continuation_token = list_objects.next_continuation_token().map(|s| s.to_string());
-        println!("\rCollected: {}", s3_keys.len());
-    }
-    println!("Finished collecting AWS keys. Total: {}", s3_keys.len());
-
-    // refresh table_files
-    let transaction = connection
-        .transaction()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
-    let mut table_files: Vec<(Uuid, String, String)> = vec![];
-    {
-        let raw_table_files = cornucopia::queries::files::get_all()
-            .bind(&transaction)
-            .all()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to fetch files: {err}"))?;
-        for file in raw_table_files {
-            // ensure the s3 object key is valid, if not, delete this entry from the database
-            if s3_client
-                .head_object()
-                .bucket(env!("AWS_BUCKET_NAME"))
-                .key(&file.aws_s3_object_key)
-                .send()
-                .await
-                .is_err()
-            {
-                cornucopia::queries::files::delete()
-                    .bind(&transaction, &file.file_path, &file.repository_uuid)
-                    .one()
-                    .await
-                    .map_err(|err| anyhow::anyhow!("Failed to delete file with invalid S3 key: {err}"))?;
-                continue;
-            }
-            table_files.push((file.repository_uuid, file.file_path, file.aws_s3_object_key));
-        }
-    }
-    println!("Found {} files in the database", table_files.len());
+    let mut all_s3_keys = get_all_from_s3(s3_client).await?;
+    println!("Found {} S3 keys", all_s3_keys.len());
 
     if let Some(only_this_repo) = only_this_repo {
-        table_files.retain(|(uuid, _, _)| *uuid == only_this_repo);
-        println!(
-            "Filtered to only repository {}, {} database files",
-            only_this_repo,
-            table_files.len()
-        );
-    }
-
-    if let Some(only_this_repo) = only_this_repo {
-        s3_keys.retain(|key| {
-            table_files
-                .iter()
-                .any(|(uuid, _, k)| *uuid == only_this_repo && k == key)
-        });
+        all_s3_keys.retain(|key| key.repo_uuid == only_this_repo);
         println!(
             "Filtered to only repository {}, {} S3 keys",
             only_this_repo,
-            s3_keys.len()
+            all_s3_keys.len()
         );
     }
 
-    let delete_keys = s3_keys
-        .iter()
-        .filter(|s3_key| !table_files.iter().any(|(_, _, key)| key == *s3_key))
-        .cloned()
-        .collect::<Vec<String>>();
+    // Split into two lists, one of files in s3 that aren't on the filesystem, and one of files on the filesystem but not in S3, if the file exists in both, discard it from either list
+    let mut only_in_s3: Vec<S3Key> = vec![];
+    let mut only_on_disk: Vec<RepositoryFile> = vec![];
 
-    let total = delete_keys.len();
-    if total != 0 {
-        display_percentage(total, 0, "Deleting orphaned S3 files");
+    for file in repository_files.iter() {
+        if !all_s3_keys.contains(&file.s3_key) {
+            only_on_disk.push(file.clone());
+        }
     }
-    for (i, s3_key) in delete_keys.iter().enumerate() {
-        s3_client
-            .delete_object()
-            .bucket(env!("AWS_BUCKET_NAME"))
-            .key(s3_key)
-            .send()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {err}"))?;
-        display_percentage(total, i + 1, "Deleting orphaned S3 files");
-    }
-    println!("Finished deleting orphaned S3 files");
 
+    for key in all_s3_keys {
+        if !repository_files.iter().any(|file| file.s3_key == key) {
+            only_in_s3.push(key);
+        }
+    }
+
+    println!("Found {} orphaned files only in S3", only_in_s3.len());
+
+    let total = only_in_s3.len();
+    // delete the files from S3 concurrently, with a limit of 10 at a time
+    let mut delete_stream = futures::stream::iter(only_in_s3)
+        .map(|key| async move { remove_from_s3(s3_client, &key).await })
+        .buffer_unordered(10);
+
+    // wait for all deletions to complete, showing a progress indicator
+    display_percentage(total, 0, "Deleting orphaned files from S3");
+    let mut i = 0;
+    while let Some(res) = delete_stream.next().await {
+        i += 1;
+        match res {
+            Ok(_) => {
+                display_percentage(total, i, "Deleted orphaned files from S3");
+            }
+            Err(err) => {
+                log::error!("Failed to delete S3 key: {err}");
+                println!("{err}");
+                display_percentage(total, i, "Failed to delete orphaned files from S3");
+            }
+        }
+    }
+
+    println!("Found {} not yet uploaded files only on disk", only_on_disk.len());
+
+    let total = only_on_disk.len();
+
+    let mut upload_stream = futures::stream::iter(only_on_disk)
+        .map(|file| async move {
+            match get_byte_stream(&file.repo_uuid, &file.full_path.display().to_string()).await {
+                Ok(body) => put_in_s3(s3_client, &file.s3_key, body).await,
+                Err(err) => {
+                    log::error!("Failed to get byte stream: {err}");
+                    Err(err)
+                }
+            }
+        })
+        .buffer_unordered(10);
+
+    display_percentage(total, 0, "Uploading new repository files");
+    let mut i = 0;
+    while let Some(res) = upload_stream.next().await {
+        i += 1;
+        match res {
+            Ok(()) => {
+                display_percentage(total, i, "Uploaded new repository file");
+            }
+            Err(err) => {
+                log::error!("Failed to upload and insert file: {err}");
+                println!("{err}");
+                display_percentage(total, i, "Failed to upload new repository file");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2336,128 +2174,154 @@ fn display_percentage(total: usize, progress: usize, label: &str) {
     println!("{label}: {percentage:.2}% ({progress}/{total})");
 }
 
-async fn download_and_insert(
-    pool: Pool,
-    table_files: Arc<[(Uuid, String, String)]>,
-    s3_client: S3Client,
-    uuid: Uuid,
-    file_path: String,
-) -> Result<bool> {
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
-    let transaction = connection
-        .transaction()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
-    if !table_files.iter().any(|(u, f, _)| u == &uuid && f == &file_path) {
-        let s3_key = Uuid::new_v4().to_string();
-        s3_client
-            .put_object()
-            .bucket(env!("AWS_BUCKET_NAME"))
-            .key(&s3_key)
-            .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
-            .body(
-                aws_sdk_s3::primitives::ByteStream::from_path(format!(
-                    "{}/{}/{}",
-                    env!("ROOT_FOLDER"),
-                    uuid,
-                    file_path
-                ))
-                .await?,
-            )
-            .send()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {}", DisplayErrorContext(err)))?;
-        if let Some(delete_old) = cornucopia::queries::files::update_or_create()
-            .bind(&transaction, &file_path, &uuid, &s3_key)
-            .opt()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?
-        {
-            log::debug!("File record updated: {delete_old:?}");
-            s3_client
-                .delete_object()
-                .bucket(std::env!("AWS_BUCKET_NAME"))
-                .key(delete_old.aws_s3_object_key)
-                .send()
-                .await
-                .ok();
-        }
-        transaction
-            .commit()
-            .await
-            .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
-        Ok(true)
-    } else {
-        Ok(false)
+use sha2::{Digest, Sha512};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct S3Key {
+    repo_uuid: Uuid,
+    path_hash: String,
+}
+
+impl std::fmt::Display for S3Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}|{}", self.repo_uuid, self.path_hash)
     }
 }
 
-async fn delayed_upload_and_insert(
-    pool: Arc<Pool>,
-    file_path: String,
-    repository_uuid: Uuid,
-    s3_client: Arc<S3Client>,
-) -> Result<()> {
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to get database connection: {err}"))?;
-    let transaction = connection
-        .transaction()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to start transaction: {err}"))?;
-    // upload to s3
-    let s3_key = Uuid::new_v4().to_string();
-    s3_client
+impl std::str::FromStr for S3Key {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split('|').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid S3Key format"));
+        }
+        let repo_uuid = Uuid::parse_str(parts[0])?;
+        Ok(S3Key {
+            repo_uuid,
+            path_hash: parts[1].to_string(),
+        })
+    }
+}
+
+fn generate_aws_key_from_path(repo_uuid: &uuid::Uuid, path: &str) -> S3Key {
+    log::debug!("AWS KEY FROM {repo_uuid}|{path}");
+    // sha512 hash raw_key
+    let mut hasher = Sha512::default();
+    hasher.update(path.as_bytes());
+    let result = hasher.finalize();
+    S3Key {
+        repo_uuid: *repo_uuid,
+        path_hash: format!("{result:x}"),
+    }
+}
+
+async fn get_byte_stream(repository_uuid: &Uuid, path: &str) -> Result<ByteStream> {
+    let full_path = format!(
+        "{}/{}/{}",
+        std::env::var("ROOT_FOLDER").expect("ROOT_FOLDER not set"),
+        repository_uuid,
+        path
+    );
+    ByteStream::from_path(&full_path).await.map_err(|err| {
+        anyhow::anyhow!(
+            "Failed to create ByteStream from path {}: {}",
+            full_path,
+            DisplayErrorContext(err)
+        )
+    })
+}
+
+async fn put_in_s3(client: &S3Client, s3_key: &S3Key, body: ByteStream) -> Result<()> {
+    client
         .put_object()
         .bucket(env!("AWS_BUCKET_NAME"))
-        .key(&s3_key)
+        .key(format!("{s3_key}"))
         .acl(aws_sdk_s3::types::ObjectCannedAcl::PublicRead)
-        .body(
-            aws_sdk_s3::primitives::ByteStream::from_path(format!(
-                "{}/{}/{}",
-                env!("ROOT_FOLDER"),
-                repository_uuid,
-                file_path
-            ))
-            .await?,
-        )
+        .body(body)
         .send()
         .await
-        .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {err}"))?;
-    // insert into database
-    if let Some(delete_old) = cornucopia::queries::files::update_or_create()
-        .bind(&transaction, &file_path, &repository_uuid, &s3_key)
-        .opt()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to create file in database: {err}"))?
-    {
-        log::debug!("File record updated: {delete_old:?}");
-        s3_client
-            .delete_object()
-            .bucket(std::env!("AWS_BUCKET_NAME"))
-            .key(delete_old.aws_s3_object_key)
-            .send()
-            .await
-            .ok();
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to commit transaction: {err}"))?;
+        .map_err(|err| anyhow::anyhow!("Failed to upload file to S3: {}", DisplayErrorContext(err)))?;
     Ok(())
 }
 
-use sha2::{Digest, Sha512};
+async fn get_from_s3(client: &S3Client, s3_key: &S3Key) -> Result<aws_sdk_s3::operation::get_object::GetObjectOutput> {
+    match client
+        .get_object()
+        .bucket(env!("AWS_BUCKET_NAME"))
+        .key(format!("{s3_key}"))
+        .send()
+        .await
+    {
+        Ok(output) => Ok(output),
+        Err(err) => Err(anyhow::anyhow!(
+            "Failed to get object from S3: {}",
+            DisplayErrorContext(err)
+        )),
+    }
+}
 
-fn generate_aws_key_from_path(repo_uuid: &uuid::Uuid, path: &str) -> String {
-    let raw_key = format!("{repo_uuid}/{path}");
-    // sha512 hash raw_key
-    let mut hasher = Sha512::default();
-    hasher.update(raw_key.as_bytes());
-    let result = hasher.finalize();
-    format!("{result:x}")
+async fn remove_from_s3(client: &S3Client, s3_key: &S3Key) -> Result<()> {
+    client
+        .delete_object()
+        .bucket(env!("AWS_BUCKET_NAME"))
+        .key(format!("{s3_key}"))
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to delete file from S3: {}", DisplayErrorContext(err)))?;
+    Ok(())
+}
+
+async fn get_all_from_s3(client: &S3Client) -> Result<Vec<S3Key>> {
+    let mut outputs = Vec::new();
+    let mut continuation_token = None;
+
+    loop {
+        let list_objects = if let Some(token) = continuation_token {
+            client
+                .list_objects_v2()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .continuation_token(token)
+                .send()
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed to list objects from S3: {}", DisplayErrorContext(err)))?
+        } else {
+            client
+                .list_objects_v2()
+                .bucket(env!("AWS_BUCKET_NAME"))
+                .send()
+                .await
+                .map_err(|err| anyhow::anyhow!("Failed to list objects from S3: {}", DisplayErrorContext(err)))?
+        };
+
+        if let Some(contents) = list_objects.contents.as_ref() {
+            for object in contents {
+                if let Some(key) = object.key() {
+                    match key.parse::<S3Key>() {
+                        Ok(key) => outputs.push(key),
+                        Err(e) => {
+                            log::error!("Failed to parse S3Key from object key: {e} DELETING FROM S3");
+                            if let Err(e) = client
+                                .delete_object()
+                                .bucket(env!("AWS_BUCKET_NAME"))
+                                .key(key)
+                                .send()
+                                .await
+                            {
+                                log::error!("Failed to delete invalid S3 key: {}", DisplayErrorContext(e));
+                            } else {
+                                log::info!("Deleted invalid S3 key: {key}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !list_objects.is_truncated.unwrap_or(false) {
+            break;
+        }
+        continuation_token = list_objects.next_continuation_token().map(|s| s.to_string());
+    }
+    Ok(outputs)
 }
